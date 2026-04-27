@@ -153,24 +153,28 @@ const getTargetWeekStart = (
   return startOfIsoWeek(todayInChicago);
 };
 
-export const ensureWeeklyCAPNotesExist = async () => {
+export const ensureWeeklyCAPNotesExist = async (): Promise<{
+  createdCount: number;
+  quarterStart: Date | null;
+  quarterEnd: Date | null;
+}> => {
   const [sigVenues, sprints] = await Promise.all([fetchSIGVenues(), fetchSprints()]);
   if (sigVenues.length === 0 || sprints.length === 0) {
-    return { createdCount: 0 };
+    return { createdCount: 0, quarterStart: null, quarterEnd: null };
   }
 
   const quarterBounds = getQuarterBounds(sprints);
   if (!quarterBounds) {
-    return { createdCount: 0 };
+    return { createdCount: 0, quarterStart: null, quarterEnd: null };
   }
 
-  const targetWeekStart = getTargetWeekStart(
-    quarterBounds.quarterStart,
-    quarterBounds.quarterEnd
-  );
+  const { quarterStart, quarterEnd } = quarterBounds;
+
+  const targetWeekStart = getTargetWeekStart(quarterStart, quarterEnd);
 
   if (!targetWeekStart) {
-    return { createdCount: 0 };
+    // Outside active quarter but still return bounds so the UI can fall back to them
+    return { createdCount: 0, quarterStart, quarterEnd };
   }
 
   await dbConnect();
@@ -234,5 +238,5 @@ export const ensureWeeklyCAPNotesExist = async () => {
     }
   }
 
-  return { createdCount };
+  return { createdCount, quarterStart, quarterEnd };
 };
