@@ -14,6 +14,94 @@ function convertTZ(date: Date | string, tzString: string) {
   );
 }
 
+const getDatePartsForTimezone = (date: Date, timezone: string) => {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  });
+
+  return formatter
+    .formatToParts(date)
+    .reduce((parts, part) => {
+      if (part.type !== 'literal') {
+        parts[part.type] = Number(part.value);
+      }
+      return parts;
+    }, {} as Record<string, number>);
+};
+
+const buildUtcDateForTimezone = (
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  timezone: string
+) => {
+  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const localizedParts = getDatePartsForTimezone(utcGuess, timezone);
+  const localizedUtcValue = Date.UTC(
+    localizedParts.year,
+    localizedParts.month - 1,
+    localizedParts.day,
+    localizedParts.hour,
+    localizedParts.minute,
+    localizedParts.second
+  );
+  const targetUtcValue = Date.UTC(year, month - 1, day, hour, minute, second);
+
+  return new Date(utcGuess.getTime() - (localizedUtcValue - targetUtcValue));
+};
+
+const computeExplicitPreSigOpportunity = (
+  nextSigDate: string,
+  orgObjs: any
+) => {
+  const sigVenue = orgObjs?.venues?.find((venue) => venue.kind === 'SigMeeting');
+  if (!sigVenue) {
+    return null;
+  }
+
+  const nextSigDateObj = new Date(nextSigDate);
+  if (Number.isNaN(nextSigDateObj.getTime())) {
+    return null;
+  }
+
+  const previousDay = new Date(nextSigDateObj.getTime());
+  previousDay.setUTCDate(previousDay.getUTCDate() - 1);
+
+  const [startHour, startMinute, startSecond] = sigVenue.startTime
+    .split(':')
+    .map(Number);
+
+  return buildUtcDateForTimezone(
+    previousDay.getUTCFullYear(),
+    previousDay.getUTCMonth() + 1,
+    previousDay.getUTCDate(),
+    startHour,
+    startMinute,
+    startSecond,
+    sigVenue.timezone
+  ).toISOString();
+};
+
+const computeFallbackNextSigDate = (noteDate: string) => {
+  const nextWeekDate = new Date(noteDate);
+  if (Number.isNaN(nextWeekDate.getTime())) {
+    return null;
+  }
+
+  nextWeekDate.setUTCDate(nextWeekDate.getUTCDate() + 7);
+  return nextWeekDate.toISOString();
+};
+
 /**
  * Generates a post-SIG message with all practice agents the mentor suggested for the current CAP Note.
  * @param {string} noteId - ID of the CAP note
@@ -128,7 +216,8 @@ export const createPreSigReflectionMessage = (
   noteId: string,
   projName: string,
   noteDate: string,
-  orgObjs: Object
+  orgObjs: any,
+  nextSigDate?: string | null
 ) => {
   let noteDateJS = new Date(noteDate);
   let weekFromCurrDate = new Date(noteDateJS.getTime());
@@ -161,19 +250,26 @@ export const createPreSigReflectionMessage = (
   let strategy = `You have SIG tomorrow! Please take some time to reflect on the practices your mentor suggested last week: <${reflectionUrl}|Reflection Page>.`;
   strategy = strategy.replace(/[\""]/g, '\\"');
 
-  let strategyFunction = async function () {
+  const effectiveNextSigDate = nextSigDate ?? computeFallbackNextSigDate(noteDate);
+  const explicitOpportunity = effectiveNextSigDate
+    ? computeExplicitPreSigOpportunity(effectiveNextSigDate, orgObjs)
+    : null;
+  const opportunityExpression = explicitOpportunity
+    ? `new Date('${explicitOpportunity}')`
+    : `await this.daysBeforeVenue(
+        await this.venues.find(this.where('kind', 'SigMeeting')),
+        1
+      )`;
+
+  let strategyFunction = `async function () {
     return await this.messageChannel({
       message: strategyTextToReplace,
       projectName: projectNameForNote,
       opportunity: async function () {
-        // send 1 day before the SIG meeting
-        return await this.daysBeforeVenue(
-          await this.venues.find(this.where('kind', 'SigMeeting')),
-          1
-        );
+        return ${opportunityExpression};
       }.toString()
     });
-  }.toString();
+  }`;
   strategyFunction = strategyFunction.replace(
     'projectNameForNote',
     `'${orgObjs.project.name}'`
@@ -182,7 +278,6 @@ export const createPreSigReflectionMessage = (
     'strategyTextToReplace',
     '"' + strategy + '"'
   );
-
   // add to newActiveIssue and return
   newActiveIssue.strategyToEnact.strategy_function = strategyFunction;
   return newActiveIssue;

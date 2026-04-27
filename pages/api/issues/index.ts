@@ -8,6 +8,7 @@ import {
   parsePracticeText,
   createPreSigReflectionMessage
 } from '../../../controllers/followUpObjects/createFollowUpStrategies';
+import { fetchNextCAPNoteForProject } from '../../../controllers/capNotes/fetchCAPNotes';
 
 type Data = {
   msg: string;
@@ -241,11 +242,16 @@ export default async function handler(
             }
 
             // Create pre-sig reflection agent
+            const nextCAPNote = await fetchNextCAPNoteForProject(
+              noteInfo.project,
+              new Date(noteInfo.sigDate)
+            );
             let preSigReflectionScript = createPreSigReflectionMessage(
               noteInfo.id,
               noteInfo.project,
               new Date(noteInfo.sigDate).toISOString(),
-              orgObjs
+              orgObjs,
+              nextCAPNote?.date?.toISOString?.() ?? null
             );
             const preSigReflectionOSRes = await fetch(
               `${process.env.ORCH_ENGINE}/activeissues/createActiveIssue`,
