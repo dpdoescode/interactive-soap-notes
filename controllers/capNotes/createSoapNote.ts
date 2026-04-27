@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import mongoose from 'mongoose';
 import dbConnect from '../../lib/dbConnect';
 import CAPNoteModel from '../../models/CAPNoteModel';
@@ -56,6 +57,16 @@ const refreshPreviousNotePreSigIssue = async (
       `Could not refresh pre-sig reflection for ${projectName} on ${previousCAPNote.date.toISOString()}`
     );
   }
+};
+
+const getDeterministicCAPNoteId = (projectName: string, normalizedDate: Date) => {
+  const stableHex = crypto
+    .createHash('md5')
+    .update(`${projectName}::${normalizedDate.toISOString()}`)
+    .digest('hex')
+    .slice(0, 24);
+
+  return new mongoose.Types.ObjectId(stableHex);
 };
 
 /**
@@ -132,6 +143,7 @@ export const createCAPNote = async (projectName: string, noteDate: Date) => {
 
     // save the new SOAP note to the database
     const createdCAPNote = await CAPNoteModel.create({
+      _id: getDeterministicCAPNoteId(projectName, normalizedDate),
       project: projectName,
       date: normalizedDate,
       lastUpdated: normalizedDate,
@@ -162,7 +174,29 @@ export const createCAPNote = async (projectName: string, noteDate: Date) => {
 
     return createdCAPNote;
   } catch (err) {
-    console.error('Error in creating CAP note: ', err, err.stack);
+    if (
+      typeof err === 'object' &&
+      err !== null &&
+      'code' in err &&
+      err.code === 11000
+    ) {
+      return await CAPNoteModel.findOne({
+        project: projectName,
+        date: new Date(
+          Date.UTC(
+            noteDate.getUTCFullYear(),
+            noteDate.getUTCMonth(),
+            noteDate.getUTCDate()
+          )
+        )
+      });
+    }
+
+    console.error(
+      'Error in creating CAP note: ',
+      err,
+      err instanceof Error ? err.stack : undefined
+    );
     return null;
   }
 };
