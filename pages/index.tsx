@@ -4,9 +4,10 @@ import Head from 'next/head';
 import { longDate, shortDate, shortDateFromISO } from '../lib/helperFns';
 import { useEffect, useState } from 'react';
 
-export default function Home({ sigs }): JSX.Element {
+export default function Home({ sigs, allSigs, quarterStart, quarterEnd }): JSX.Element {
   // store state for each SIG on whether to show latest or all CAP notes
   const [showAllNotes, setShowAllNotes] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   // state for the "create new CAP note" form
   const [showNewNoteForm, setShowNewNoteForm] = useState(false);
@@ -28,11 +29,13 @@ export default function Home({ sigs }): JSX.Element {
     'CAP Notes and Practice Agents'
   ];
 
-  // use a state variable for sigs so dates can be updated to locale time
+  // use state variables for sigs so dates can be updated to locale time
   const [sigsState, setSigsState] = useState(sigs);
+  const [allSigsState, setAllSigsState] = useState(allSigs);
+
   useEffect(() => {
-    setSigsState(
-      sigs.map((sig) => ({
+    const format = (rawSigs) =>
+      rawSigs.map((sig) => ({
         ...sig,
         capNotes: sig.capNotes
           .map((capNote) => ({
@@ -40,10 +43,13 @@ export default function Home({ sigs }): JSX.Element {
             dateDisplay: shortDateFromISO(capNote.date),
             lastUpdatedDisplay: longDate(new Date(capNote.lastUpdated))
           }))
-          .sort((a, b) => new Date(b.date) - new Date(a.date)) // Sort newest first by ISO date
-      }))
-    );
+          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      }));
+    setSigsState(format(sigs));
+    setAllSigsState(format(allSigs));
   }, []);
+
+  const displayedSigs = showHistory ? allSigsState : sigsState;
 
   return (
     <>
@@ -57,18 +63,24 @@ export default function Home({ sigs }): JSX.Element {
           </h1>
         </div>
 
-        {/* button to toggle all notes or just last note */}
-        <button
-          className="mb-4 h-10 rounded-full bg-blue-500 px-4 py-1 text-xs font-bold text-white hover:bg-blue-700"
-          onClick={() => setShowAllNotes(!showAllNotes)}
-        >
-          {showAllNotes ? 'Show Most Recent Notes' : 'Show All Notes'}
-        </button>
-
-        {/* new button/form for creating a CAP note (SIG meeting) */}
-        <div className="mb-4">
+        {/* buttons to control which notes are shown */}
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex gap-2">
+            <button
+              className="h-10 rounded-full bg-blue-500 px-4 py-1 text-xs font-bold text-white hover:bg-blue-700"
+              onClick={() => setShowAllNotes(!showAllNotes)}
+            >
+              {showAllNotes ? 'Show Most Recent Notes' : 'Show All Notes'}
+            </button>
+            <button
+              className="h-10 rounded-full bg-gray-500 px-4 py-1 text-xs font-bold text-white hover:bg-gray-700"
+              onClick={() => setShowHistory(!showHistory)}
+            >
+              {showHistory ? 'Current Quarter' : 'Show History'}
+            </button>
+          </div>
           <button
-            className="mr-2 h-10 rounded-full bg-green-500 px-4 py-1 text-xs font-bold text-white hover:bg-green-700"
+            className="h-10 rounded-full bg-green-500 px-4 py-1 text-xs font-bold text-white hover:bg-green-700"
             onClick={() => setShowNewNoteForm(!showNewNoteForm)}
           >
             {showNewNoteForm ? 'Hide New Note Form' : 'Add New SIG Meeting'}
@@ -147,7 +159,7 @@ export default function Home({ sigs }): JSX.Element {
 
         <div className="col-span-2 w-full">
           {/* List of SIGs */}
-          {sigsState.map((sig, i) => (
+          {displayedSigs.map((sig, i) => (
             <div className="mb-10 w-full" key={sig.abbreviation}>
               {/* Header Info for each SIG */}
               <div className="mb-3 grid w-full auto-rows-auto grid-cols-5 gap-y-5 border-b border-black text-xl font-bold">
@@ -207,56 +219,61 @@ export const getServerSideProps = async () => {
   const { ensureWeeklyCAPNotesExist } = await import(
     '../lib/server/sigAutopopulate'
   );
-  await ensureWeeklyCAPNotesExist();
+  const { quarterStart, quarterEnd } = await ensureWeeklyCAPNotesExist();
 
-  // fetch all CAP notes
   const capNotes = await fetchAllCAPNotes();
 
-  // sort cap notes by date in descending order
-  capNotes.sort(
-    (a, b) =>
-      a.sigName.localeCompare(b.sigName) || new Date(b.date) - new Date(a.date)
-  );
-
-  // get a list of SIGs from all CAP notes
-  let haveNoteForProject = new Set();
-  const sigs = capNotes.reduce((acc, capNote) => {
-    // check if we have a note stored already for this project
-    let isLatest = false;
-    if (!haveNoteForProject.has(capNote.project)) {
-      haveNoteForProject.add(capNote.project);
-      isLatest = true;
-    }
-
-    // create the cap note object to add to list
-    const capNoteObj = {
-      id: capNote._id.toString(),
-      project: capNote.project,
-      date: capNote.date.toISOString(),
-      lastUpdated: capNote.lastUpdated.toISOString(),
-      isLatest
-    };
-
-    // check if the SIG is already in the list
-    const sigIndex = acc.findIndex(
-      (sig) => sig.abbreviation === capNote.sigAbbreviation
+  // Groups a sorted array of cap notes into a sigs structure with isLatest flags
+  const buildSigs = (notes: typeof capNotes) => {
+    const sorted = [...notes].sort(
+      (a, b) =>
+        a.sigName.localeCompare(b.sigName) ||
+        new Date(b.date).getTime() - new Date(a.date).getTime()
     );
-    if (sigIndex === -1) {
-      // add the SIG to the list
-      acc.push({
-        name: capNote.sigName,
-        abbreviation: capNote.sigAbbreviation,
-        capNotes: [capNoteObj]
-      });
-    } else {
-      // add the CAP note to the SIG's list of CAP notes
-      acc[sigIndex].capNotes.push(capNoteObj);
-    }
+    const seen = new Set<string>();
+    return sorted.reduce((acc, capNote) => {
+      let isLatest = false;
+      if (!seen.has(capNote.project)) {
+        seen.add(capNote.project);
+        isLatest = true;
+      }
+      const capNoteObj = {
+        id: capNote._id.toString(),
+        project: capNote.project,
+        date: capNote.date.toISOString(),
+        lastUpdated: capNote.lastUpdated.toISOString(),
+        isLatest
+      };
+      const sigIndex = acc.findIndex(
+        (sig) => sig.abbreviation === capNote.sigAbbreviation
+      );
+      if (sigIndex === -1) {
+        acc.push({
+          name: capNote.sigName,
+          abbreviation: capNote.sigAbbreviation,
+          capNotes: [capNoteObj]
+        });
+      } else {
+        acc[sigIndex].capNotes.push(capNoteObj);
+      }
+      return acc;
+    }, []);
+  };
 
-    return acc;
-  }, []);
+  // Quarter-filtered: only notes within the current (or most recent) quarter
+  const quarterNotes =
+    quarterStart && quarterEnd
+      ? capNotes.filter(
+          (note) => note.date >= quarterStart && note.date <= quarterEnd
+        )
+      : capNotes;
 
   return {
-    props: { sigs }
+    props: {
+      sigs: buildSigs(quarterNotes),
+      allSigs: buildSigs(capNotes),
+      quarterStart: quarterStart?.toISOString() ?? null,
+      quarterEnd: quarterEnd?.toISOString() ?? null
+    }
   };
 };
