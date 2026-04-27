@@ -3,6 +3,60 @@ import dbConnect from '../../lib/dbConnect';
 import CAPNoteModel from '../../models/CAPNoteModel';
 import IssueObjectModel from '../../models/IssueObjectModel';
 import { createNewTextEntryBlock } from '../textEntryBlock/createNewTextEntryBlock';
+import { createPreSigReflectionMessage } from '../followUpObjects/createFollowUpStrategies';
+
+const refreshPreviousNotePreSigIssue = async (
+  previousCAPNote,
+  nextCAPNoteDate: Date,
+  projectName: string
+) => {
+  if (!process.env.ORCH_ENGINE || !previousCAPNote?._id) {
+    return;
+  }
+
+  const orgObjRes = await fetch(
+    `${process.env.ORCH_ENGINE}/organizationalObjects/getComputedOrganizationalObjectsForProject`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ projectName })
+    }
+  );
+
+  if (!orgObjRes.ok) {
+    throw new Error(
+      `Could not fetch computed organizational objects for ${projectName}`
+    );
+  }
+
+  const orgObjs = await orgObjRes.json();
+  const preSigReflectionScript = createPreSigReflectionMessage(
+    previousCAPNote._id.toString(),
+    projectName,
+    previousCAPNote.date.toISOString(),
+    orgObjs,
+    nextCAPNoteDate.toISOString()
+  );
+
+  const preSigReflectionOSRes = await fetch(
+    `${process.env.ORCH_ENGINE}/activeissues/createActiveIssue`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(preSigReflectionScript)
+    }
+  );
+
+  if (!preSigReflectionOSRes.ok) {
+    throw new Error(
+      `Could not refresh pre-sig reflection for ${projectName} on ${previousCAPNote.date.toISOString()}`
+    );
+  }
+};
 
 /**
  * Create a new CAP note given the project and date of the note.
@@ -77,7 +131,7 @@ export const createCAPNote = async (projectName: string, noteDate: Date) => {
     }
 
     // save the new SOAP note to the database
-    return await CAPNoteModel.create({
+    const createdCAPNote = await CAPNoteModel.create({
       project: projectName,
       date: normalizedDate,
       lastUpdated: normalizedDate,
@@ -90,6 +144,23 @@ export const createCAPNote = async (projectName: string, noteDate: Date) => {
       currentIssues: [],
       trackedPractices: trackedPractices
     });
+
+    if (previousCAPNote) {
+      try {
+        await refreshPreviousNotePreSigIssue(
+          previousCAPNote,
+          normalizedDate,
+          projectName
+        );
+      } catch (error) {
+        console.error(
+          'Error in refreshing previous note pre-sig issue: ',
+          error
+        );
+      }
+    }
+
+    return createdCAPNote;
   } catch (err) {
     console.error('Error in creating CAP note: ', err, err.stack);
     return null;

@@ -47,3 +47,20 @@ export const fetchCAPNoteById = async (id: string) => {
   await dbConnect();
   return await CAPNoteModel.findById(id);
 };
+
+/**
+ * Fetches the next CAP note for a project after a given date.
+ * @param project Project name
+ * @param currentDate Current CAP note date
+ * @returns next CAP note object or null
+ */
+export const fetchNextCAPNoteForProject = async (
+  project: string,
+  currentDate: Date
+) => {
+  await dbConnect();
+  return await CAPNoteModel.findOne({
+    project,
+    date: { $gt: currentDate }
+  }).sort({ date: 1 });
+};
