@@ -1,6 +1,26 @@
 import mongoose, { Types } from 'mongoose';
 import { TextEntrySchema, TextEntryStruct } from './TextEntryModel';
 
+export interface MeetingTranscriptUtteranceStruct {
+  speaker: string;
+  text: string;
+  start: number | null;
+  end: number | null;
+}
+
+export interface MeetingTranscriptStruct {
+  provider: string;
+  status: 'idle' | 'processing' | 'completed' | 'error';
+  transcriptId: string | null;
+  audioMimeType: string | null;
+  requestedAt: string | null;
+  completedAt: string | null;
+  text: string;
+  formattedText: string;
+  utterances: MeetingTranscriptUtteranceStruct[];
+  error: string | null;
+}
+
 export interface CAPStruct {
   project: string;
   date: Date;
@@ -13,7 +33,78 @@ export interface CAPStruct {
   pastIssues: Types.ObjectId[];
   currentIssues: Types.ObjectId[];
   trackedPractices: Types.ObjectId[];
+  meetingTranscript?: MeetingTranscriptStruct | null;
 }
+
+const MeetingTranscriptUtteranceSchema =
+  new mongoose.Schema<MeetingTranscriptUtteranceStruct>(
+    {
+      speaker: {
+        type: String,
+        required: true
+      },
+      text: {
+        type: String,
+        required: true
+      },
+      start: {
+        type: Number,
+        default: null
+      },
+      end: {
+        type: Number,
+        default: null
+      }
+    },
+    { _id: false }
+  );
+
+const MeetingTranscriptSchema = new mongoose.Schema<MeetingTranscriptStruct>(
+  {
+    provider: {
+      type: String,
+      default: 'assemblyai'
+    },
+    status: {
+      type: String,
+      enum: ['idle', 'processing', 'completed', 'error'],
+      default: 'idle'
+    },
+    transcriptId: {
+      type: String,
+      default: null
+    },
+    audioMimeType: {
+      type: String,
+      default: null
+    },
+    requestedAt: {
+      type: String,
+      default: null
+    },
+    completedAt: {
+      type: String,
+      default: null
+    },
+    text: {
+      type: String,
+      default: ''
+    },
+    formattedText: {
+      type: String,
+      default: ''
+    },
+    utterances: {
+      type: [MeetingTranscriptUtteranceSchema],
+      default: []
+    },
+    error: {
+      type: String,
+      default: null
+    }
+  },
+  { _id: false }
+);
 
 const CAPNote = new mongoose.Schema<CAPStruct>({
   project: {
@@ -57,7 +148,22 @@ const CAPNote = new mongoose.Schema<CAPStruct>({
       type: mongoose.Schema.Types.ObjectId,
       ref: 'PracticeGapObject'
     }
-  ]
+  ],
+  meetingTranscript: {
+    type: MeetingTranscriptSchema,
+    default: () => ({
+      provider: 'assemblyai',
+      status: 'idle',
+      transcriptId: null,
+      audioMimeType: null,
+      requestedAt: null,
+      completedAt: null,
+      text: '',
+      formattedText: '',
+      utterances: [],
+      error: null
+    })
+  }
 });
 
 export default (mongoose.models.CAPNote as mongoose.Model<CAPStruct>) ||

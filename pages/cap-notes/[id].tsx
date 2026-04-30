@@ -71,6 +71,9 @@ export default function CAPNote({
   // hold a state for showing / hiding practice gap details
   const [showPracticeGaps, setShowPracticeGaps] = useState(false);
 
+  // hold a state for showing / hiding the recording panel
+  const [showRecording, setShowRecording] = useState(false);
+
   // let user know that we are saving and if there were any errors
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -478,13 +481,13 @@ export default function CAPNote({
       </Head>
 
       {/* Header info for CAP note */}
-      <div className="mx-auto mt-2 w-full pl-3 pr-3">
+      <div className="mx-auto flex h-dvh flex-col overflow-hidden pl-3 pr-3 pt-2">
         {/* Back, title, and last updated */}
-        <div className="flex flex-row flex-nowrap items-center">
+        <div className="flex flex-shrink-0 flex-row flex-nowrap items-center">
           {/* Back button */}
           <div className="mr-1">
             <Link href="/">
-              <Tooltip content="Back to all notes" placement="bottom">
+              <Tooltip content="" placement="bottom">
                 <h3 className="text-base font-bold text-blue-400 visited:text-purple-600 hover:text-blue-500">
                   &#8592;
                 </h3>
@@ -543,99 +546,131 @@ export default function CAPNote({
           <div></div>
         </div>
 
-        <div className="mb-4 mt-3 rounded border border-slate-300 bg-slate-50 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+        {/* Meeting Recording — collapsible */}
+        <div className="mt-2 flex-shrink-0 rounded border border-slate-300 bg-slate-50">
+          <button
+            className="flex w-full items-center justify-between px-4 py-2 text-left"
+            onClick={() => setShowRecording(!showRecording)}
+          >
+            <div className="flex items-center gap-2">
               <h2 className="text-base font-bold">Meeting Recording</h2>
-              <p className="text-sm text-slate-600">
+              {isRecording && (
+                <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600">
+                  Recording
+                </span>
+              )}
+              {isUploadingRecording && (
+                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-600">
+                  Uploading
+                </span>
+              )}
+              {meetingTranscript?.status === 'processing' && (
+                <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-700">
+                  Processing
+                </span>
+              )}
+              {meetingTranscript?.status === 'completed' && (
+                <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+                  Transcript Ready
+                </span>
+              )}
+              {transcriptError && (
+                <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600">
+                  Error
+                </span>
+              )}
+            </div>
+            <span className="text-slate-400">{showRecording ? '▲' : '▼'}</span>
+          </button>
+
+          {showRecording && (
+            <div className="border-t border-slate-300 p-4">
+              <p className="mb-3 text-sm text-slate-600">
                 Record the project team meeting, then process a speaker-labeled
                 transcript for coach review and future LLM use.
               </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <label className="flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-                <span>Expected Speakers</span>
-                <select
-                  value={expectedSpeakers}
-                  onChange={(e) => setExpectedSpeakers(Number(e.target.value))}
-                  className="bg-transparent outline-none"
-                  disabled={isRecording || isUploadingRecording}
-                >
-                  {[2, 3, 4, 5, 6].map((count) => (
-                    <option key={count} value={count}>
-                      {count}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {!isRecording ? (
+              <div className="flex flex-wrap gap-2">
+                <label className="flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+                  <span>Expected Speakers</span>
+                  <select
+                    value={expectedSpeakers}
+                    onChange={(e) => setExpectedSpeakers(Number(e.target.value))}
+                    className="bg-transparent outline-none"
+                    disabled={isRecording || isUploadingRecording}
+                  >
+                    {[2, 3, 4, 5, 6].map((count) => (
+                      <option key={count} value={count}>
+                        {count}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {!isRecording ? (
+                  <button
+                    className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                    onClick={startRecording}
+                    disabled={isUploadingRecording}
+                  >
+                    Start Recording
+                  </button>
+                ) : (
+                  <button
+                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                    onClick={stopRecording}
+                  >
+                    Stop & Process
+                  </button>
+                )}
                 <button
-                  className="rounded-full bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-                  onClick={startRecording}
-                  disabled={isUploadingRecording}
+                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={refreshTranscript}
                 >
-                  Start Recording
+                  Refresh Transcript
                 </button>
-              ) : (
-                <button
-                  className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                  onClick={stopRecording}
-                >
-                  Stop & Process
-                </button>
-              )}
-              <button
-                className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                onClick={refreshTranscript}
-              >
-                Refresh Transcript
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-3 text-sm text-slate-700">
-            {isRecording && <p>Recording in progress. Click stop when the meeting ends.</p>}
-            {isUploadingRecording && (
-              <p>Uploading audio and starting transcription...</p>
-            )}
-            {!isUploadingRecording && meetingTranscript?.status === 'processing' && (
-              <p>
-                Transcript is processing with {meetingTranscript.provider}. This
-                panel refreshes automatically every few seconds.
-              </p>
-            )}
-            {meetingTranscript?.status === 'completed' && (
-              <p>
-                Transcript ready
-                {meetingTranscript.completedAt
-                  ? ` • Completed ${meetingTranscript.completedAt}`
-                  : ''}
-              </p>
-            )}
-            {transcriptError && (
-              <p className="font-semibold text-red-600">{transcriptError}</p>
-            )}
-          </div>
-
-          {meetingTranscript?.formattedText && (
-            <div className="mt-4 rounded border border-slate-200 bg-white p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h3 className="text-sm font-bold">Transcript</h3>
-                <div className="text-xs text-slate-500">
-                  {meetingTranscript.utterances?.length ?? 0} speaker turns
-                </div>
               </div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-800">
-                {meetingTranscript.formattedText}
-              </pre>
+
+              <div className="mt-3 text-sm text-slate-700">
+                {isRecording && <p>Recording in progress. Click stop when the meeting ends.</p>}
+                {isUploadingRecording && <p>Uploading audio and starting transcription...</p>}
+                {!isUploadingRecording && meetingTranscript?.status === 'processing' && (
+                  <p>
+                    Transcript is processing with {meetingTranscript.provider}. This
+                    panel refreshes automatically every few seconds.
+                  </p>
+                )}
+                {meetingTranscript?.status === 'completed' && (
+                  <p>
+                    Transcript ready
+                    {meetingTranscript.completedAt
+                      ? ` • Completed ${meetingTranscript.completedAt}`
+                      : ''}
+                  </p>
+                )}
+                {transcriptError && (
+                  <p className="font-semibold text-red-600">{transcriptError}</p>
+                )}
+              </div>
+
+              {meetingTranscript?.formattedText && (
+                <div className="mt-4 rounded border border-slate-200 bg-white p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold">Transcript</h3>
+                    <div className="text-xs text-slate-500">
+                      {meetingTranscript.utterances?.length ?? 0} speaker turns
+                    </div>
+                  </div>
+                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-800">
+                    {meetingTranscript.formattedText}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
         </div>
 
         <DndProvider backend={HTML5Backend}>
-          {/* Past issues and tracked practices fixed to top of page */}
-          {/* TODO: 05-06-24: maybe add a hide and show button so mentor can recover vertical space when done browsing past issues */}
-          <div className="fixed w-full">
+          {/* Past issues and tracked practices pinned above note space */}
+          <div className="w-full flex-shrink-0">
             <div className="mr-6 flex flex-row">
               {/* All Issues */}
               <div className="mb-5 h-[25vh] w-full">
@@ -718,21 +753,18 @@ export default function CAPNote({
             </div>
           </div>
 
-          {/* Placeholder div to push down the non-fixed portion */}
-          <div className="h-[26vh]" />
-
-          {/* Note Space */}
-          <div>
+          {/* Note Space — fills remaining viewport height */}
+          <div className="flex flex-1 flex-col overflow-hidden">
             {/* if no issue is selected */}
             {selectedIssue === null && (
-              <div>
+              <div className="flex flex-1 flex-col min-h-0">
                 <h1 className="sticky top-0 mb-1 border-b border-black bg-white text-base font-bold italic">
                   Select an issue from above to view or edit notes. Tracked gaps
                   in students self-regulation skills are shown below, for
                   reference.
                 </h1>
 
-                <div className="h-[66vh] w-full overflow-auto">
+                <div className="min-h-0 flex-1 w-full overflow-auto">
                   {/* Practice Cards */}
                   <div className="mb-3">
                     {/* Active Practices */}
@@ -798,7 +830,7 @@ export default function CAPNote({
                         )
                       ].title}
                   </h1>
-                  <div className="h-[66vh] w-full overflow-auto">
+                  <div className="min-h-0 flex-1 w-full overflow-auto">
                     <p className="text-xs italic">
                       Write notes about selected issue below. Context and
                       Assessment notes are private to you.{' '}
@@ -848,7 +880,7 @@ export default function CAPNote({
                       ].title}
                   </h1>
 
-                  <div className="h-[66vh] w-full overflow-auto">
+                  <div className="min-h-0 flex-1 w-full overflow-auto">
                     <LastWeekIssuePane
                       issueId={selectedIssue}
                       noteInfo={noteInfo}
