@@ -193,7 +193,7 @@ export default async function handler(
           headers: getAssemblyHeaders('application/json'),
           body: JSON.stringify({
             audio_url: uploadJson.upload_url,
-            speech_model: 'best',
+            speech_models: ['universal-3-pro'],
             language_detection: true,
             speaker_labels: true,
             speakers_expected: shouldUseExactSpeakerCount ? expectedSpeakers : 2
