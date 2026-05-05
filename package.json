@@ -30,6 +30,7 @@
     "mongoose": "^8.4.1",
     "next": "^14.2.3",
     "nextjs-progressbar": "^0.0.16",
+    "openai": "^6.36.0",
     "react": "^18.3.1",
     "react-autocomplete-input": "^1.0.31",
     "react-contenteditable": "^3.3.7",
