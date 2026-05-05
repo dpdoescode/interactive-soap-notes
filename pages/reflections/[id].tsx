@@ -577,8 +577,10 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
   // helper function to convert mongo ids to strings
   const mongoIdFlattener = {
     transform: function (doc, ret) {
-      ret.id = ret._id.toString();
-      delete ret._id;
+      if (ret?._id != null) {
+        ret.id = ret._id.toString();
+        delete ret._id;
+      }
     }
   };
 
