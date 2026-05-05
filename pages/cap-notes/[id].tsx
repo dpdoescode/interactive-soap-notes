@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Head from 'next/head';
 import mongoose, { set } from 'mongoose';
 import { mutate } from 'swr';
+import type { AIDraftIssue, AIDraftOutput } from '../api/ai-draft/[id]';
 
 // helper components
 import { Tooltip } from 'flowbite-react';
@@ -73,6 +74,15 @@ export default function CAPNote({
 
   // hold a state for showing / hiding the recording panel
   const [showRecording, setShowRecording] = useState(false);
+
+  // AI draft assistant state
+  const [showAIDraft, setShowAIDraft] = useState(false);
+  const [coachReflections, setCoachReflections] = useState('');
+  const [aiDraft, setAiDraft] = useState<AIDraftOutput | null>(null);
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [followUpInput, setFollowUpInput] = useState('');
+  const [showEvidence, setShowEvidence] = useState<Record<number, boolean>>({});
 
   // let user know that we are saving and if there were any errors
   const [isSaving, setIsSaving] = useState(false);
@@ -546,8 +556,11 @@ export default function CAPNote({
           <div></div>
         </div>
 
+        {/* Collapsible panels — scroll within this area if both are expanded */}
+        <div className="mt-2 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '45vh' }}>
+
         {/* Meeting Recording — collapsible */}
-        <div className="mt-2 flex-shrink-0 rounded border border-slate-300 bg-slate-50">
+        <div className="rounded border border-slate-300 bg-slate-50">
           <button
             className="flex w-full items-center justify-between px-4 py-2 text-left"
             onClick={() => setShowRecording(!showRecording)}
@@ -666,6 +679,311 @@ export default function CAPNote({
               )}
             </div>
           )}
+        </div>
+
+        {/* AI Draft Assistant — collapsible */}
+        <div className="mt-2 rounded border border-violet-300 bg-violet-50">
+          <button
+            className="flex w-full items-center justify-between px-4 py-2 text-left"
+            onClick={() => setShowAIDraft(!showAIDraft)}
+          >
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-violet-800">AI Draft Assistant</h2>
+              {isGeneratingDraft && (
+                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700">
+                  Generating...
+                </span>
+              )}
+              {aiDraft && !isGeneratingDraft && (
+                <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
+                  Draft Ready
+                </span>
+              )}
+            </div>
+            <span className="text-slate-400">{showAIDraft ? '▲' : '▼'}</span>
+          </button>
+
+          {showAIDraft && (
+            <div className="border-t border-violet-200 p-4">
+              <p className="mb-3 text-sm text-slate-600">
+                Generate a structured CAP note draft from this meeting&apos;s transcript.
+                The AI will produce Context (observations), Assessment (hypotheses), and Plan
+                (verbatim from meeting) for each issue it identifies.
+              </p>
+
+              {!meetingTranscript?.formattedText && (
+                <p className="mb-3 rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+                  No transcript found. Record and process a meeting first using the Meeting
+                  Recording panel above.
+                </p>
+              )}
+
+              {/* Coach reflections input */}
+              <div className="mb-3">
+                <label className="mb-1 block text-sm font-semibold text-slate-700">
+                  Coach Post-Meeting Reflections (optional)
+                </label>
+                <textarea
+                  className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-violet-400 focus:outline-none"
+                  rows={3}
+                  placeholder="Add any observations or context from after the meeting that aren't in the transcript..."
+                  value={coachReflections}
+                  onChange={(e) => setCoachReflections(e.target.value)}
+                  disabled={isGeneratingDraft}
+                />
+              </div>
+
+              {/* Generate button */}
+              <button
+                className="rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+                disabled={isGeneratingDraft || !meetingTranscript?.formattedText}
+                onClick={async () => {
+                  setIsGeneratingDraft(true);
+                  setDraftError(null);
+                  setShowEvidence({});
+                  try {
+                    const res = await fetch(`/api/ai-draft/${noteInfo.id}`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ coachReflections })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data.success) {
+                      throw new Error(data.error ?? 'Failed to generate draft');
+                    }
+                    setAiDraft(data.data);
+                    setFollowUpInput('');
+                  } catch (err) {
+                    setDraftError(err instanceof Error ? err.message : 'Unknown error');
+                  } finally {
+                    setIsGeneratingDraft(false);
+                  }
+                }}
+              >
+                {isGeneratingDraft ? 'Generating...' : aiDraft ? 'Regenerate Draft' : 'Generate Draft'}
+              </button>
+
+              {draftError && (
+                <p className="mt-2 text-sm font-semibold text-red-600">{draftError}</p>
+              )}
+
+              {/* Per-issue draft cards */}
+              {aiDraft && aiDraft.issues.length > 0 && (
+                <div className="mt-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-slate-700">
+                      Generated Draft — {aiDraft.issues.length} issue{aiDraft.issues.length !== 1 ? 's' : ''}
+                    </h3>
+                    <button
+                      className="text-xs text-slate-400 underline hover:text-slate-600"
+                      onClick={() => {
+                        const text = aiDraft.issues.map((issue, i) => {
+                          const ctx = issue.context.map(c => `- ${c}`).join('\n');
+                          const asmnt = issue.assessment.map(a => `- ${a}`).join('\n');
+                          const plan = issue.plan.join('\n');
+                          return `Issue ${i + 1}: ${issue.title}\n\nContext:\n${ctx}\n\nAssessment:\n${asmnt}\n\nPlan:\n${plan}`;
+                        }).join('\n\n---\n\n');
+                        navigator.clipboard.writeText(text);
+                      }}
+                    >
+                      Copy all
+                    </button>
+                  </div>
+
+                  {aiDraft.issues.map((issue: AIDraftIssue, i: number) => (
+                    <div key={i} className="rounded border border-violet-100 bg-white text-sm">
+                      {/* Issue header — copy title only */}
+                      <div className="flex items-start justify-between border-b border-violet-100 px-3 py-2">
+                        <span className="font-semibold text-slate-800">
+                          Issue {i + 1} — {issue.title}
+                        </span>
+                        <button
+                          className="ml-2 shrink-0 text-xs text-slate-400 underline hover:text-slate-600"
+                          onClick={() => navigator.clipboard.writeText(issue.title)}
+                        >
+                          Copy
+                        </button>
+                      </div>
+
+                      <div className="divide-y divide-slate-50">
+                        {/* Context */}
+                        {issue.context.length > 0 && (
+                          <div className="px-3 py-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Context</p>
+                              <button
+                                className="text-xs text-slate-400 underline hover:text-slate-600"
+                                onClick={() => navigator.clipboard.writeText(issue.context.map(c => `- ${c}`).join('\n'))}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <ul className="space-y-1 text-slate-700">
+                              {issue.context.map((c, j) => (
+                                <li key={j} className="flex gap-1.5">
+                                  <span className="mt-0.5 shrink-0 text-slate-400">•</span>
+                                  <span>{c}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* Assessment */}
+                        {issue.assessment.length > 0 && (
+                          <div className="px-3 py-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Assessment</p>
+                              <div className="flex gap-2">
+                                {issue.supporting_quotes?.length > 0 && (
+                                  <button
+                                    className="text-xs text-violet-500 underline hover:text-violet-700"
+                                    onClick={() => setShowEvidence(prev => ({ ...prev, [i]: !prev[i] }))}
+                                  >
+                                    {showEvidence[i] ? 'Hide evidence' : 'Show evidence'}
+                                  </button>
+                                )}
+                                <button
+                                  className="text-xs text-slate-400 underline hover:text-slate-600"
+                                  onClick={() => navigator.clipboard.writeText(issue.assessment.map(a => `- ${a}`).join('\n'))}
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                            </div>
+                            <ul className="space-y-1 text-slate-700">
+                              {issue.assessment.map((a, j) => (
+                                <li key={j} className="flex gap-1.5">
+                                  <span className="mt-0.5 shrink-0 text-slate-400">•</span>
+                                  <span>{a}</span>
+                                </li>
+                              ))}
+                            </ul>
+                            {showEvidence[i] && issue.supporting_quotes?.length > 0 && (
+                              <div className="mt-2 space-y-1 rounded bg-violet-50 p-2">
+                                <p className="text-xs font-semibold text-violet-600">Supporting quotes from transcript</p>
+                                {issue.supporting_quotes.map((q, j) => (
+                                  <p key={j} className="text-xs italic text-slate-600">"{q}"</p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Plan */}
+                        {issue.plan.length > 0 && (
+                          <div className="px-3 py-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Plan</p>
+                              <button
+                                className="text-xs text-slate-400 underline hover:text-slate-600"
+                                onClick={() => navigator.clipboard.writeText(issue.plan.join('\n'))}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <ul className="space-y-1.5 text-slate-700">
+                              {issue.plan.map((p, j) => {
+                                const tagMatch = p.match(/^\[([^\]]+)\]/);
+                                return (
+                                  <li key={j} className="flex gap-1.5">
+                                    <span className="mt-0.5 shrink-0 text-slate-400">•</span>
+                                    <span>
+                                      {tagMatch && (
+                                        <span className="mr-1 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-violet-700">
+                                          [{tagMatch[1]}]
+                                        </span>
+                                      )}
+                                      {tagMatch ? p.slice(tagMatch[0].length).trim() : p}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Refinement input */}
+                  <div className="mt-1">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        className="flex-1 rounded border border-slate-300 px-3 py-2 text-sm focus:border-violet-400 focus:outline-none"
+                        placeholder='Ask to refine, e.g. "Issue 2 missed the timeline discussion"'
+                        value={followUpInput}
+                        onChange={(e) => setFollowUpInput(e.target.value)}
+                        disabled={isGeneratingDraft}
+                        onKeyDown={async (e) => {
+                          if (e.key === 'Enter' && !e.shiftKey && followUpInput.trim() && !isGeneratingDraft) {
+                            e.preventDefault();
+                            setIsGeneratingDraft(true);
+                            setDraftError(null);
+                            try {
+                              const res = await fetch(`/api/ai-draft/${noteInfo.id}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  coachReflections,
+                                  followUpMessage: followUpInput,
+                                  previousDraft: JSON.stringify(aiDraft)
+                                })
+                              });
+                              const data = await res.json();
+                              if (!res.ok || !data.success) throw new Error(data.error ?? 'Failed to refine');
+                              setAiDraft(data.data);
+                              setFollowUpInput('');
+                              setShowEvidence({});
+                            } catch (err) {
+                              setDraftError(err instanceof Error ? err.message : 'Unknown error');
+                            } finally {
+                              setIsGeneratingDraft(false);
+                            }
+                          }
+                        }}
+                      />
+                      <button
+                        className="rounded-full bg-slate-700 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
+                        disabled={isGeneratingDraft || !followUpInput.trim()}
+                        onClick={async () => {
+                          if (!followUpInput.trim()) return;
+                          setIsGeneratingDraft(true);
+                          setDraftError(null);
+                          try {
+                            const res = await fetch(`/api/ai-draft/${noteInfo.id}`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                coachReflections,
+                                followUpMessage: followUpInput,
+                                previousDraft: JSON.stringify(aiDraft)
+                              })
+                            });
+                            const data = await res.json();
+                            if (!res.ok || !data.success) throw new Error(data.error ?? 'Failed to refine');
+                            setAiDraft(data.data);
+                            setFollowUpInput('');
+                            setShowEvidence({});
+                          } catch (err) {
+                            setDraftError(err instanceof Error ? err.message : 'Unknown error');
+                          } finally {
+                            setIsGeneratingDraft(false);
+                          }
+                        }}
+                      >
+                        Refine
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* end collapsible panels wrapper */}
         </div>
 
         <DndProvider backend={HTML5Backend}>
