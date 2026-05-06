@@ -97,7 +97,23 @@ Emotional/Motivational: emotional regulation, motivation
 
 ## Plan Tags
 
-[plan] general next step | [help] seeking help | [reflect] reflection activity | [self-work] independent student work | w[person] working with someone | at[time/place] time or location specific | rep[resource] using a resource
+Each plan item begins with one primary tag:
+- [plan]: stories, deliverables, or tasks to add to the sprint log
+- [help]: work with a peer or mentor on a practice
+- [reflect]: reflect on a situation if it comes up
+- [self-work]: work activity for the student to do on their own
+
+Append additional context modifiers after the primary tag as needed:
+- w[Full Name]: start a DM with that person to do the practice (use the person's full name — e.g. w[Jessica Sun], w[Haoqi Zhang])
+- at[opportunity]: next opportunity to do the practice (e.g., at[mysore], at[pair research], at[next SIG])
+- rep[representation]: representation to use for the practice — supports canvas, design, planning; general writing, table, or diagram
+
+## People Directory & Name Resolution
+
+A directory of lab members will be provided in the user message. Use it to:
+- Fuzzy-match spoken names to their full names (e.g., "Haochi" → "Haoqi Zhang", "Jess" → "Jessica Sun")
+- Always write the resolved full name inside w[] tags — never a nickname, never a Slack ID
+- If a name cannot be confidently resolved, write it as heard (e.g., w[Haochi])
 
 ## Rules
 
@@ -132,17 +148,30 @@ Return a JSON object only — no markdown wrapping. Structure:
   ]
 }`;
 
+const formatPeopleDirectory = (
+  people: { name: string; slack_id: string }[]
+): string => {
+  if (!people.length) return '';
+  return people.map((p) => `- ${p.name}`).join('\n');
+};
+
 const buildUserMessage = (
   projectName: string,
   sigName: string,
   transcript: string,
   coachReflections: string,
   priorNotesText: string,
-  practiceGapsText: string
+  practiceGapsText: string,
+  allPeople: { name: string; slack_id: string }[]
 ): string => {
   let msg = `Generate CAP notes for the following meeting. Write in the same style as the examples — direct, specific, coach-voice.\n\n`;
   msg += `**Project:** ${projectName}\n`;
   msg += `**SIG:** ${sigName}\n\n`;
+
+  const peopleDir = formatPeopleDirectory(allPeople);
+  if (peopleDir) {
+    msg += `## People Directory\n\nFuzzy-match spoken names in the transcript to these full names. Use the resolved full name in w[] tags.\n\n${peopleDir}\n\n`;
+  }
 
   if (practiceGapsText) {
     msg += `## Tracked Practice Gaps for This Team\n\n${practiceGapsText}\n\n`;
@@ -242,7 +271,12 @@ export default async function handler(
       });
     }
 
-    const { coachReflections = '', followUpMessage = '', previousDraft = '' } = req.body;
+    const {
+      coachReflections = '',
+      followUpMessage = '',
+      previousDraft = '',
+      allPeople = []
+    } = req.body;
 
     // Fetch same-project notes first, then backfill from other projects so the
     // model always sees at least 2 real coach-written examples for style calibration
@@ -279,7 +313,8 @@ export default async function handler(
       transcript,
       coachReflections,
       priorNotesText,
-      practiceGapsText
+      practiceGapsText,
+      allPeople
     );
 
     const openai = new OpenAI({ apiKey });

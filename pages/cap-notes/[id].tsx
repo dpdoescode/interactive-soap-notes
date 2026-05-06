@@ -43,7 +43,16 @@ export default function CAPNote({
   capNoteInfo,
   lastWeekIssues,
   currentWeekIssues,
-  practiceGaps
+  practiceGaps,
+  sigMembers,
+  allPeople
+}: {
+  capNoteInfo: any;
+  lastWeekIssues: any[];
+  currentWeekIssues: any[];
+  practiceGaps: any[];
+  sigMembers: { name: string; slack_id: string }[];
+  allPeople: { name: string; slack_id: string }[];
 }): JSX.Element {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -56,9 +65,14 @@ export default function CAPNote({
     capNoteInfo.meetingTranscript ?? null
   );
   const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [isUploadingRecording, setIsUploadingRecording] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
-  const [expectedSpeakers, setExpectedSpeakers] = useState(2);
+  // sigMembers already includes all SIG students + faculty (coach), so length = total meeting participants
+  const [expectedSpeakers, setExpectedSpeakers] = useState(
+    Math.max(2, Math.min(sigMembers.length, 6))
+  );
+  const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({});
 
   // hold data state for issues and practices
   // see here for updating arrays in state variables: https://react.dev/learn/updating-arrays-in-state#updating-objects-inside-arrays
@@ -227,9 +241,37 @@ export default function CAPNote({
       return;
     }
 
+    if (mediaRecorderRef.current.state === 'paused') {
+      mediaRecorderRef.current.resume();
+    }
     mediaRecorderRef.current.requestData();
     mediaRecorderRef.current.stop();
     setIsRecording(false);
+    setIsPaused(false);
+  };
+
+  const pauseRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.pause();
+      setIsPaused(true);
+    }
+  };
+
+  const resumeRecording = () => {
+    if (mediaRecorderRef.current?.state === 'paused') {
+      mediaRecorderRef.current.resume();
+      setIsPaused(false);
+    }
+  };
+
+  const getTranscriptWithNames = (formattedText: string) => {
+    let result = formattedText;
+    Object.entries(speakerNameMap).forEach(([label, name]) => {
+      if (name.trim()) {
+        result = result.replace(new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), name);
+      }
+    });
+    return result;
   };
 
   const refreshTranscript = async () => {
@@ -567,9 +609,14 @@ export default function CAPNote({
           >
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold">Meeting Recording</h2>
-              {isRecording && (
+              {isRecording && !isPaused && (
                 <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600">
                   Recording
+                </span>
+              )}
+              {isRecording && isPaused && (
+                <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-700">
+                  Paused
                 </span>
               )}
               {isUploadingRecording && (
@@ -627,12 +674,29 @@ export default function CAPNote({
                     Start Recording
                   </button>
                 ) : (
-                  <button
-                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                    onClick={stopRecording}
-                  >
-                    Stop & Process
-                  </button>
+                  <>
+                    {!isPaused ? (
+                      <button
+                        className="rounded-full bg-yellow-500 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-600"
+                        onClick={pauseRecording}
+                      >
+                        Pause
+                      </button>
+                    ) : (
+                      <button
+                        className="rounded-full bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700"
+                        onClick={resumeRecording}
+                      >
+                        Resume
+                      </button>
+                    )}
+                    <button
+                      className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                      onClick={stopRecording}
+                    >
+                      Stop & Process
+                    </button>
+                  </>
                 )}
                 <button
                   className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
@@ -643,7 +707,8 @@ export default function CAPNote({
               </div>
 
               <div className="mt-3 text-sm text-slate-700">
-                {isRecording && <p>Recording in progress. Click stop when the meeting ends.</p>}
+                {isRecording && !isPaused && <p>Recording in progress. Click pause to pause, or stop when the meeting ends.</p>}
+                {isRecording && isPaused && <p>Recording paused. Click resume to continue, or stop & process to finalize.</p>}
                 {isUploadingRecording && <p>Uploading audio and starting transcription...</p>}
                 {!isUploadingRecording && meetingTranscript?.status === 'processing' && (
                   <p>
@@ -664,6 +729,37 @@ export default function CAPNote({
                 )}
               </div>
 
+              {meetingTranscript?.status === 'completed' && meetingTranscript.utterances?.length > 0 && (
+                <div className="mt-4 rounded border border-slate-200 bg-white p-3">
+                  <h3 className="mb-2 text-sm font-bold">Identify Speakers</h3>
+                  <p className="mb-2 text-xs text-slate-500">
+                    Map each speaker label to a participant name. Type freely or pick from team members.
+                  </p>
+                  <datalist id="team-members-list">
+                    {sigMembers.map((m) => (
+                      <option key={m.slack_id} value={m.name} />
+                    ))}
+                  </datalist>
+                  <div className="flex flex-wrap gap-2">
+                    {Array.from(new Set(meetingTranscript.utterances.map((u: { speaker: string }) => u.speaker))).map((speakerLabel: string) => (
+                      <label key={speakerLabel} className="flex items-center gap-1.5 text-sm text-slate-700">
+                        <span className="font-medium">{speakerLabel}:</span>
+                        <input
+                          type="text"
+                          list="team-members-list"
+                          className="w-36 rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                          placeholder="Name (optional)"
+                          value={speakerNameMap[speakerLabel] ?? ''}
+                          onChange={(e) =>
+                            setSpeakerNameMap((prev) => ({ ...prev, [speakerLabel]: e.target.value }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {meetingTranscript?.formattedText && (
                 <div className="mt-4 rounded border border-slate-200 bg-white p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
@@ -673,7 +769,7 @@ export default function CAPNote({
                     </div>
                   </div>
                   <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-800">
-                    {meetingTranscript.formattedText}
+                    {getTranscriptWithNames(meetingTranscript.formattedText)}
                   </pre>
                 </div>
               )}
@@ -745,7 +841,7 @@ export default function CAPNote({
                     const res = await fetch(`/api/ai-draft/${noteInfo.id}`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ coachReflections })
+                      body: JSON.stringify({ coachReflections, allPeople })
                     });
                     const data = await res.json();
                     if (!res.ok || !data.success) {
@@ -928,7 +1024,8 @@ export default function CAPNote({
                                 body: JSON.stringify({
                                   coachReflections,
                                   followUpMessage: followUpInput,
-                                  previousDraft: JSON.stringify(aiDraft)
+                                  previousDraft: JSON.stringify(aiDraft),
+                                  allPeople
                                 })
                               });
                               const data = await res.json();
@@ -1376,6 +1473,45 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
     sprintPoints = ['unable to fetch sprint points'];
   }
 
+  // sigMembers: SIG students + coach, sourced directly from the SIG social structure
+  // allPeople: full lab roster for AI name resolution
+  let sigMembers: { name: string; slack_id: string }[] = [];
+  let allPeople: { name: string; slack_id: string }[] = [];
+  try {
+    const [sigsRes, peopleRes] = await Promise.all([
+      fetch(`${process.env.STUDIO_API}/socialStructures/sigs`),
+      fetch(`${process.env.STUDIO_API}/people`)
+    ]);
+
+    if (sigsRes.ok) {
+      const sigs = await sigsRes.json();
+      const thisSig = Array.isArray(sigs)
+        ? sigs.find((s: any) => s.name === currentCAPNote.sigName)
+        : null;
+      if (thisSig) {
+        const members: { name: string; slack_id: string }[] = (thisSig.members ?? [])
+          .filter((m: any) => m.name && m.slack_id)
+          .map((m: any) => ({ name: String(m.name), slack_id: String(m.slack_id) }));
+        const coach =
+          thisSig.sig_head?.name && thisSig.sig_head?.slack_id
+            ? [{ name: String(thisSig.sig_head.name), slack_id: String(thisSig.sig_head.slack_id) }]
+            : [];
+        sigMembers = [...members, ...coach];
+      }
+    }
+
+    if (peopleRes.ok) {
+      const people = await peopleRes.json();
+      if (Array.isArray(people)) {
+        allPeople = people
+          .filter((p: any) => p.name && p.slack_id)
+          .map((p: any) => ({ name: String(p.name), slack_id: String(p.slack_id) }));
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching SIG/people from studio-api:', err);
+  }
+
   // /**
   //  * get active issues from OS
   //  * TODO: if using these, make them create cards that can be removed
@@ -1475,7 +1611,9 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
       capNoteInfo: capNoteInfo,
       lastWeekIssues,
       currentWeekIssues,
-      practiceGaps
+      practiceGaps,
+      sigMembers,
+      allPeople
     }
   };
 };
