@@ -33,6 +33,8 @@ export interface CAPStruct {
   pastIssues: Types.ObjectId[];
   currentIssues: Types.ObjectId[];
   trackedPractices: Types.ObjectId[];
+  meetingTranscripts: Types.ObjectId[];
+  /** @deprecated migrated to meetingTranscripts collection */
   meetingTranscript?: MeetingTranscriptStruct | null;
 }
 
@@ -147,6 +149,12 @@ const CAPNote = new mongoose.Schema<CAPStruct>({
     {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'PracticeGapObject'
+    }
+  ],
+  meetingTranscripts: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MeetingTranscript'
     }
   ],
   meetingTranscript: {

@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import dbConnect from '../../../lib/dbConnect';
 import CAPNoteModel from '../../../models/CAPNoteModel';
+import MeetingTranscriptModel from '../../../models/MeetingTranscriptModel';
 
 type TranscriptResponse = {
   success: boolean;
@@ -57,60 +58,104 @@ const formatTranscriptText = (utterances: any[] = [], fallbackText = '') => {
     .join('\n\n');
 };
 
-const syncTranscriptStatus = async (capNoteId: string) => {
+const serializeTranscript = (doc: any) => {
+  const obj = doc.toObject ? doc.toObject() : doc;
+  return {
+    id: obj._id.toString(),
+    capNoteId: obj.capNoteId?.toString() ?? null,
+    provider: obj.provider,
+    status: obj.status,
+    transcriptId: obj.transcriptId,
+    audioMimeType: obj.audioMimeType,
+    requestedAt: obj.requestedAt,
+    completedAt: obj.completedAt,
+    text: obj.text,
+    formattedText: obj.formattedText,
+    utterances: obj.utterances ?? [],
+    error: obj.error
+  };
+};
+
+/**
+ * Syncs any 'processing' transcripts against AssemblyAI and saves updates.
+ * Returns all transcript docs for the cap note sorted newest first.
+ */
+const syncAndFetchTranscripts = async (capNoteId: string) => {
   const capNote = await CAPNoteModel.findById(capNoteId);
   if (!capNote) {
     throw new Error('CAP note not found');
   }
 
-  const meetingTranscript = capNote.meetingTranscript;
-  if (!meetingTranscript?.transcriptId) {
-    return meetingTranscript ?? null;
-  }
-
-  if (meetingTranscript.status !== 'processing') {
-    return meetingTranscript;
-  }
-
-  const transcriptRes = await fetch(
-    `${ASSEMBLY_AI_API}/transcript/${meetingTranscript.transcriptId}`,
-    {
-      headers: getAssemblyHeaders()
+  // One-time migration: legacy embedded meetingTranscript → meetingTranscripts collection
+  // Guard by checking the collection directly — the capNote array is not reliably persisted
+  if (capNote.meetingTranscript?.transcriptId) {
+    const existingCount = await MeetingTranscriptModel.countDocuments({
+      capNoteId: capNote._id
+    });
+    if (existingCount === 0) {
+      const legacy = (capNote.meetingTranscript as any).toObject();
+      const migratedDoc = await MeetingTranscriptModel.create({
+        capNoteId: capNote._id,
+        provider: legacy.provider ?? 'assemblyai',
+        status: legacy.status === 'idle' ? 'completed' : legacy.status,
+        transcriptId: legacy.transcriptId,
+        audioMimeType: legacy.audioMimeType,
+        requestedAt: legacy.requestedAt,
+        completedAt: legacy.completedAt,
+        text: legacy.text,
+        formattedText: legacy.formattedText,
+        utterances: legacy.utterances ?? [],
+        error: legacy.error
+      });
+      if (!capNote.meetingTranscripts) capNote.meetingTranscripts = [];
+      capNote.meetingTranscripts.push(migratedDoc._id);
+      await capNote.save();
     }
-  );
-  const transcriptJson = await transcriptRes.json();
-
-  if (!transcriptRes.ok) {
-    throw new Error(
-      transcriptJson?.error ?? 'Unable to fetch transcript from AssemblyAI'
-    );
   }
 
-  if (transcriptJson.status === 'completed') {
-    capNote.meetingTranscript = {
-      ...meetingTranscript.toObject(),
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-      text: transcriptJson.text ?? '',
-      formattedText: formatTranscriptText(
+  const transcripts = await MeetingTranscriptModel.find({ capNoteId }).sort({
+    requestedAt: -1
+  });
+
+  // Sync any still-processing transcripts with AssemblyAI
+  for (const transcript of transcripts) {
+    if (transcript.status !== 'processing' || !transcript.transcriptId) {
+      continue;
+    }
+
+    const transcriptRes = await fetch(
+      `${ASSEMBLY_AI_API}/transcript/${transcript.transcriptId}`,
+      { headers: getAssemblyHeaders() }
+    );
+    const transcriptJson = await transcriptRes.json();
+
+    if (!transcriptRes.ok) {
+      throw new Error(
+        transcriptJson?.error ?? 'Unable to fetch transcript from AssemblyAI'
+      );
+    }
+
+    if (transcriptJson.status === 'completed') {
+      transcript.status = 'completed';
+      transcript.completedAt = new Date().toISOString();
+      transcript.text = transcriptJson.text ?? '';
+      transcript.formattedText = formatTranscriptText(
         transcriptJson.utterances,
         transcriptJson.text ?? ''
-      ),
-      utterances: formatUtterances(transcriptJson.utterances),
-      error: null
-    };
-    await capNote.save();
-  } else if (transcriptJson.status === 'error') {
-    capNote.meetingTranscript = {
-      ...meetingTranscript.toObject(),
-      status: 'error',
-      completedAt: new Date().toISOString(),
-      error: transcriptJson.error ?? 'AssemblyAI transcription failed'
-    };
-    await capNote.save();
+      );
+      transcript.utterances = formatUtterances(transcriptJson.utterances);
+      transcript.error = null;
+      await transcript.save();
+    } else if (transcriptJson.status === 'error') {
+      transcript.status = 'error';
+      transcript.completedAt = new Date().toISOString();
+      transcript.error =
+        transcriptJson.error ?? 'AssemblyAI transcription failed';
+      await transcript.save();
+    }
   }
 
-  return capNote.meetingTranscript;
+  return transcripts;
 };
 
 export const config = {
@@ -137,16 +182,19 @@ export default async function handler(
   switch (method) {
     case 'GET':
       try {
-        const transcript = await syncTranscriptStatus(id);
-        return res.status(200).json({ success: true, data: transcript });
+        const transcripts = await syncAndFetchTranscripts(id);
+        return res
+          .status(200)
+          .json({ success: true, data: transcripts.map(serializeTranscript) });
       } catch (error) {
-        console.error('Error syncing transcript status:', error);
+        console.error('Error fetching transcripts:', error);
         return res.status(400).json({
           success: false,
           error:
-            error instanceof Error ? error.message : 'Unable to fetch transcript'
+            error instanceof Error ? error.message : 'Unable to fetch transcripts'
         });
       }
+
     case 'POST':
       try {
         const capNote = await CAPNoteModel.findById(id);
@@ -180,7 +228,7 @@ export default async function handler(
         const uploadRes = await fetch(`${ASSEMBLY_AI_API}/upload`, {
           method: 'POST',
           headers: getAssemblyHeaders(audioMimeType),
-          body: audioBuffer
+          body: audioBuffer as unknown as BodyInit
         });
         const uploadJson = await uploadRes.json();
 
@@ -193,7 +241,7 @@ export default async function handler(
           headers: getAssemblyHeaders('application/json'),
           body: JSON.stringify({
             audio_url: uploadJson.upload_url,
-            speech_models: ['universal-3-pro'],
+            speech_models: ['universal-3-pro', 'universal-2'],
             language_detection: true,
             speaker_labels: true,
             speakers_expected: shouldUseExactSpeakerCount ? expectedSpeakers : 2
@@ -207,7 +255,8 @@ export default async function handler(
           );
         }
 
-        capNote.meetingTranscript = {
+        const newTranscript = await MeetingTranscriptModel.create({
+          capNoteId: capNote._id,
           provider: 'assemblyai',
           status: 'processing',
           transcriptId: transcriptJson.id,
@@ -218,13 +267,14 @@ export default async function handler(
           formattedText: '',
           utterances: [],
           error: null
-        };
+        });
+
+        capNote.meetingTranscripts.push(newTranscript._id);
         await capNote.save();
 
-        return res.status(200).json({
-          success: true,
-          data: capNote.meetingTranscript
-        });
+        return res
+          .status(200)
+          .json({ success: true, data: serializeTranscript(newTranscript) });
       } catch (error) {
         console.error('Error starting transcript:', error);
         return res.status(400).json({
@@ -233,6 +283,7 @@ export default async function handler(
             error instanceof Error ? error.message : 'Unable to start transcript'
         });
       }
+
     default:
       return res
         .status(405)

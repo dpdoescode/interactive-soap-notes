@@ -61,18 +61,20 @@ export default function CAPNote({
   // have state for cap note data
   const [noteInfo, setNoteInfo] = useState(capNoteInfo);
   const [lastUpdated, setLastUpdated] = useState(capNoteInfo.lastUpdated);
-  const [meetingTranscript, setMeetingTranscript] = useState(
-    capNoteInfo.meetingTranscript ?? null
+  const [meetingTranscripts, setMeetingTranscripts] = useState<any[]>(
+    capNoteInfo.meetingTranscripts ?? []
   );
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isUploadingRecording, setIsUploadingRecording] = useState(false);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [expandedTranscriptIds, setExpandedTranscriptIds] = useState<Set<string>>(new Set());
   // sigMembers already includes all SIG students + faculty (coach), so length = total meeting participants
   const [expectedSpeakers, setExpectedSpeakers] = useState(
     Math.max(2, Math.min(sigMembers.length, 6))
   );
-  const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({});
+  // keyed by transcript id → speaker label → display name
+  const [speakerNameMaps, setSpeakerNameMaps] = useState<Record<string, Record<string, string>>>({});
 
   // hold data state for issues and practices
   // see here for updating arrays in state variables: https://react.dev/learn/updating-arrays-in-state#updating-objects-inside-arrays
@@ -88,6 +90,16 @@ export default function CAPNote({
 
   // hold a state for showing / hiding the recording panel
   const [showRecording, setShowRecording] = useState(false);
+
+  // right side panel visibility + resizable width (VSCode-style)
+  const [showRightPanel, setShowRightPanel] = useState(true);
+  const [panelWidth, setPanelWidth] = useState(384);
+  const isDraggingPanel = useRef(false);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(384);
+
+  // audio playback URL (created from blob after recording stops, session-only)
+  const [audioPlaybackUrl, setAudioPlaybackUrl] = useState<string | null>(null);
 
   // AI draft assistant state
   const [showAIDraft, setShowAIDraft] = useState(false);
@@ -105,6 +117,22 @@ export default function CAPNote({
   // hold a ref that checks if first load
   const firstLoad = useRef(true);
 
+  // panel resize drag handlers
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDraggingPanel.current) return;
+      const delta = dragStartX.current - e.clientX;
+      setPanelWidth(Math.max(240, Math.min(900, dragStartWidth.current + delta)));
+    };
+    const onMouseUp = () => { isDraggingPanel.current = false; };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
   // on first load, set the dates for noteInfo to be localized to the timezone
   useEffect(() => {
     setNoteInfo((prevNoteInfo) => ({
@@ -116,8 +144,12 @@ export default function CAPNote({
     setLastUpdated(longDate(new Date(noteInfo.lastUpdated)));
   }, []);
 
+  const hasProcessingTranscript = meetingTranscripts.some(
+    (t) => t.status === 'processing'
+  );
+
   useEffect(() => {
-    if (meetingTranscript?.status !== 'processing') {
+    if (!hasProcessingTranscript) {
       return;
     }
 
@@ -132,10 +164,13 @@ export default function CAPNote({
           );
         }
 
-        setMeetingTranscript(transcriptData.data);
-        if (transcriptData.data?.status === 'error') {
+        setMeetingTranscripts(transcriptData.data);
+        const erroredTranscript = transcriptData.data?.find(
+          (t: any) => t.status === 'error' && t.error
+        );
+        if (erroredTranscript) {
           setTranscriptError(
-            transcriptData.data.error ?? 'Transcription processing failed'
+            erroredTranscript.error ?? 'Transcription processing failed'
           );
         }
       } catch (error) {
@@ -149,7 +184,7 @@ export default function CAPNote({
     }, 5000);
 
     return () => clearInterval(intervalId);
-  }, [meetingTranscript?.status, noteInfo.id]);
+  }, [hasProcessingTranscript, noteInfo.id]);
 
   useEffect(() => {
     return () => {
@@ -191,6 +226,10 @@ export default function CAPNote({
         });
         stream.getTracks().forEach((track) => track.stop());
         mediaStreamRef.current = null;
+        setAudioPlaybackUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(audioBlob);
+        });
         setIsUploadingRecording(true);
 
         try {
@@ -210,7 +249,7 @@ export default function CAPNote({
             );
           }
 
-          setMeetingTranscript(transcriptData.data);
+          setMeetingTranscripts((prev) => [transcriptData.data, ...prev]);
         } catch (error) {
           console.error(error);
           setTranscriptError(
@@ -264,9 +303,10 @@ export default function CAPNote({
     }
   };
 
-  const getTranscriptWithNames = (formattedText: string) => {
+  const getTranscriptWithNames = (formattedText: string, transcriptId: string) => {
     let result = formattedText;
-    Object.entries(speakerNameMap).forEach(([label, name]) => {
+    const nameMap = speakerNameMaps[transcriptId] ?? {};
+    Object.entries(nameMap).forEach(([label, name]) => {
       if (name.trim()) {
         result = result.replace(new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), name);
       }
@@ -274,23 +314,16 @@ export default function CAPNote({
     return result;
   };
 
-  const refreshTranscript = async () => {
-    try {
-      setTranscriptError(null);
-      const transcriptRes = await fetch(`/api/transcripts/${noteInfo.id}`);
-      const transcriptData = await transcriptRes.json();
-
-      if (!transcriptRes.ok) {
-        throw new Error(transcriptData.error ?? 'Unable to fetch transcript');
+  const toggleExpandedTranscript = (transcriptId: string) => {
+    setExpandedTranscriptIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(transcriptId)) {
+        next.delete(transcriptId);
+      } else {
+        next.add(transcriptId);
       }
-
-      setMeetingTranscript(transcriptData.data);
-    } catch (error) {
-      console.error(error);
-      setTranscriptError(
-        error instanceof Error ? error.message : 'Unable to fetch transcript'
-      );
-    }
+      return next;
+    });
   };
 
   // listen for changes in pastIssue, currentIssue, or practiceGaps states and do debounced saves to database
@@ -595,11 +628,35 @@ export default function CAPNote({
               <></>
             )}
           </div>
-          <div></div>
+          <button
+            onClick={() => setShowRightPanel((v) => !v)}
+            className="ml-auto flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            title={showRightPanel ? 'Hide AI panel' : 'Show AI panel'}
+          >
+            {showRightPanel ? 'Hide Panel ›' : '‹ Show Panel'}
+          </button>
         </div>
 
-        {/* Collapsible panels — scroll within this area if both are expanded */}
-        <div className="mt-2 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '45vh' }}>
+        {/* Body — main content left, AI side panel right */}
+        <div className="mt-2 flex flex-row-reverse flex-1 min-h-0 overflow-hidden gap-2">
+
+        {/* Right side panel — collapsible, VSCode-style */}
+        {showRightPanel && (
+        <div
+          className="relative flex flex-shrink-0 flex-col border-l border-slate-200"
+          style={{ width: panelWidth }}
+        >
+          {/* drag handle */}
+          <div
+            className="absolute bottom-0 left-0 top-0 z-10 w-1 cursor-col-resize hover:bg-blue-400 transition-colors"
+            onMouseDown={(e) => {
+              isDraggingPanel.current = true;
+              dragStartX.current = e.clientX;
+              dragStartWidth.current = panelWidth;
+              e.preventDefault();
+            }}
+          />
+          <div className="flex flex-1 flex-col overflow-y-auto pl-3">
 
         {/* Meeting Recording — collapsible */}
         <div className="rounded border border-slate-300 bg-slate-50">
@@ -624,12 +681,12 @@ export default function CAPNote({
                   Uploading
                 </span>
               )}
-              {meetingTranscript?.status === 'processing' && (
+              {meetingTranscripts[0]?.status === 'processing' && (
                 <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-700">
                   Processing
                 </span>
               )}
-              {meetingTranscript?.status === 'completed' && (
+              {meetingTranscripts[0]?.status === 'completed' && (
                 <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
                   Transcript Ready
                 </span>
@@ -698,30 +755,16 @@ export default function CAPNote({
                     </button>
                   </>
                 )}
-                <button
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                  onClick={refreshTranscript}
-                >
-                  Refresh Transcript
-                </button>
               </div>
 
               <div className="mt-3 text-sm text-slate-700">
                 {isRecording && !isPaused && <p>Recording in progress. Click pause to pause, or stop when the meeting ends.</p>}
                 {isRecording && isPaused && <p>Recording paused. Click resume to continue, or stop & process to finalize.</p>}
                 {isUploadingRecording && <p>Uploading audio and starting transcription...</p>}
-                {!isUploadingRecording && meetingTranscript?.status === 'processing' && (
+                {!isUploadingRecording && meetingTranscripts[0]?.status === 'processing' && (
                   <p>
-                    Transcript is processing with {meetingTranscript.provider}. This
+                    Transcript is processing with {meetingTranscripts[0].provider}. This
                     panel refreshes automatically every few seconds.
-                  </p>
-                )}
-                {meetingTranscript?.status === 'completed' && (
-                  <p>
-                    Transcript ready
-                    {meetingTranscript.completedAt
-                      ? ` • Completed ${meetingTranscript.completedAt}`
-                      : ''}
                   </p>
                 )}
                 {transcriptError && (
@@ -729,48 +772,141 @@ export default function CAPNote({
                 )}
               </div>
 
-              {meetingTranscript?.status === 'completed' && meetingTranscript.utterances?.length > 0 && (
-                <div className="mt-4 rounded border border-slate-200 bg-white p-3">
-                  <h3 className="mb-2 text-sm font-bold">Identify Speakers</h3>
-                  <p className="mb-2 text-xs text-slate-500">
-                    Map each speaker label to a participant name. Type freely or pick from team members.
-                  </p>
-                  <datalist id="team-members-list">
-                    {sigMembers.map((m) => (
-                      <option key={m.slack_id} value={m.name} />
-                    ))}
-                  </datalist>
-                  <div className="flex flex-wrap gap-2">
-                    {Array.from(new Set(meetingTranscript.utterances.map((u: { speaker: string }) => u.speaker))).map((speakerLabel: string) => (
-                      <label key={speakerLabel} className="flex items-center gap-1.5 text-sm text-slate-700">
-                        <span className="font-medium">{speakerLabel}:</span>
-                        <input
-                          type="text"
-                          list="team-members-list"
-                          className="w-36 rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
-                          placeholder="Name (optional)"
-                          value={speakerNameMap[speakerLabel] ?? ''}
-                          onChange={(e) =>
-                            setSpeakerNameMap((prev) => ({ ...prev, [speakerLabel]: e.target.value }))
-                          }
-                        />
-                      </label>
-                    ))}
-                  </div>
+              {/* Most recent transcript */}
+              {meetingTranscripts[0] && (
+                <div className="mt-4">
+                  {meetingTranscripts[0].status === 'completed' && meetingTranscripts[0].utterances?.length > 0 && (
+                    <div className="rounded border border-slate-200 bg-white p-3">
+                      <h3 className="mb-2 text-sm font-bold">Identify Speakers</h3>
+                      <p className="mb-2 text-xs text-slate-500">
+                        Map each speaker label to a participant name. Type freely or pick from team members.
+                      </p>
+                      <datalist id="team-members-list">
+                        {sigMembers.map((m) => (
+                          <option key={m.slack_id} value={m.name} />
+                        ))}
+                      </datalist>
+                      <div className="flex flex-wrap gap-2">
+                        {Array.from(new Set(meetingTranscripts[0].utterances.map((u: { speaker: string }) => u.speaker))).map((speakerLabel: string) => (
+                          <label key={speakerLabel} className="flex items-center gap-1.5 text-sm text-slate-700">
+                            <span className="font-medium">{speakerLabel}:</span>
+                            <input
+                              type="text"
+                              list="team-members-list"
+                              className="w-36 rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                              placeholder="Name (optional)"
+                              value={speakerNameMaps[meetingTranscripts[0].id]?.[speakerLabel] ?? ''}
+                              onChange={(e) =>
+                                setSpeakerNameMaps((prev) => ({
+                                  ...prev,
+                                  [meetingTranscripts[0].id]: {
+                                    ...(prev[meetingTranscripts[0].id] ?? {}),
+                                    [speakerLabel]: e.target.value
+                                  }
+                                }))
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {audioPlaybackUrl && (
+                    <div className="mt-3">
+                      <p className="mb-1 text-xs font-medium text-slate-500">Playback (current session)</p>
+                      <audio controls src={audioPlaybackUrl} className="w-full" />
+                    </div>
+                  )}
+
+                  {meetingTranscripts[0].formattedText && (
+                    <div className="mt-3 rounded border border-slate-200 bg-white p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <h3 className="text-sm font-bold">Transcript</h3>
+                        <div className="text-xs text-slate-500">
+                          {meetingTranscripts[0].utterances?.length ?? 0} speaker turns
+                          {meetingTranscripts[0].completedAt ? ` • ${new Date(meetingTranscripts[0].completedAt).toLocaleString()}` : ''}
+                        </div>
+                      </div>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-800">
+                        {getTranscriptWithNames(meetingTranscripts[0].formattedText, meetingTranscripts[0].id)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {meetingTranscript?.formattedText && (
-                <div className="mt-4 rounded border border-slate-200 bg-white p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-bold">Transcript</h3>
-                    <div className="text-xs text-slate-500">
-                      {meetingTranscript.utterances?.length ?? 0} speaker turns
+              {/* Previous recordings */}
+              {meetingTranscripts.length > 1 && (
+                <div className="mt-4">
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Previous Recordings ({meetingTranscripts.length - 1})
+                  </h3>
+                  {meetingTranscripts.slice(1).map((t: any, i: number) => (
+                    <div key={t.id} className="mb-2 rounded border border-slate-200 bg-white">
+                      <button
+                        className="flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+                        onClick={() => toggleExpandedTranscript(t.id)}
+                      >
+                        <span className="font-medium text-slate-700">
+                          Recording {meetingTranscripts.length - 1 - i}
+                          {t.requestedAt ? ` — ${new Date(t.requestedAt).toLocaleDateString()}` : ''}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {t.status === 'completed' && (
+                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">Completed</span>
+                          )}
+                          {t.status === 'processing' && (
+                            <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-700">Processing</span>
+                          )}
+                          {t.status === 'error' && (
+                            <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600">Error</span>
+                          )}
+                          <span className="text-slate-400">{expandedTranscriptIds.has(t.id) ? '▲' : '▼'}</span>
+                        </div>
+                      </button>
+                      {expandedTranscriptIds.has(t.id) && (
+                        <div className="border-t border-slate-100 px-3 pb-3 pt-2">
+                          {t.status === 'error' && (
+                            <p className="text-sm text-red-600">{t.error ?? 'Transcription failed.'}</p>
+                          )}
+                          {t.status === 'completed' && t.utterances?.length > 0 && (
+                            <div className="mb-3">
+                              <h4 className="mb-1 text-xs font-semibold text-slate-600">Identify Speakers</h4>
+                              <div className="flex flex-wrap gap-2">
+                                {Array.from(new Set(t.utterances.map((u: { speaker: string }) => u.speaker))).map((speakerLabel: string) => (
+                                  <label key={speakerLabel} className="flex items-center gap-1.5 text-sm text-slate-700">
+                                    <span className="font-medium">{speakerLabel}:</span>
+                                    <input
+                                      type="text"
+                                      list="team-members-list"
+                                      className="w-36 rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                                      placeholder="Name (optional)"
+                                      value={speakerNameMaps[t.id]?.[speakerLabel] ?? ''}
+                                      onChange={(e) =>
+                                        setSpeakerNameMaps((prev) => ({
+                                          ...prev,
+                                          [t.id]: {
+                                            ...(prev[t.id] ?? {}),
+                                            [speakerLabel]: e.target.value
+                                          }
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {t.formattedText && (
+                            <pre className="max-h-60 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-800">
+                              {getTranscriptWithNames(t.formattedText, t.id)}
+                            </pre>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-800">
-                    {getTranscriptWithNames(meetingTranscript.formattedText)}
-                  </pre>
+                  ))}
                 </div>
               )}
             </div>
@@ -807,7 +943,7 @@ export default function CAPNote({
                 (verbatim from meeting) for each issue it identifies.
               </p>
 
-              {!meetingTranscript?.formattedText && (
+              {!meetingTranscripts.some((t: any) => t.status === 'completed' && t.formattedText) && (
                 <p className="mb-3 rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
                   No transcript found. Record and process a meeting first using the Meeting
                   Recording panel above.
@@ -832,7 +968,7 @@ export default function CAPNote({
               {/* Generate button */}
               <button
                 className="rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-                disabled={isGeneratingDraft || !meetingTranscript?.formattedText}
+                disabled={isGeneratingDraft || !meetingTranscripts.some((t: any) => t.status === 'completed' && t.formattedText)}
                 onClick={async () => {
                   setIsGeneratingDraft(true);
                   setDraftError(null);
@@ -1080,9 +1216,14 @@ export default function CAPNote({
           )}
         </div>
 
-        {/* end collapsible panels wrapper */}
+        {/* end right side panel inner scroll area */}
         </div>
+        {/* end right side panel outer wrapper */}
+        </div>
+        )}
 
+        {/* Left main content */}
+        <div className="flex flex-1 flex-col overflow-hidden min-h-0">
         <DndProvider backend={HTML5Backend}>
           {/* Past issues and tracked practices pinned above note space */}
           <div className="w-full flex-shrink-0">
@@ -1311,6 +1452,8 @@ export default function CAPNote({
               )}
           </div>
         </DndProvider>
+        </div> {/* end left main content */}
+        </div> {/* end body flex-row */}
       </div>
     </>
   );
@@ -1344,6 +1487,8 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
     };
   };
 
+  const { default: MeetingTranscriptModel } = await import('../../models/MeetingTranscriptModel');
+
   // get the sig name and date from the query
   let capNoteId = query.params?.id as string;
 
@@ -1353,6 +1498,56 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
    */
   // TODO: see how I can add type checking to this
   let currentCAPNote = await fetchCAPNoteById(capNoteId);
+
+  // One-time migration: legacy embedded meetingTranscript → meetingTranscripts collection
+  // Guard against the capNote array being unreliable by checking the collection directly
+  if (currentCAPNote.meetingTranscript?.transcriptId) {
+    const existingCount = await MeetingTranscriptModel.countDocuments({
+      capNoteId: currentCAPNote._id
+    });
+    if (existingCount === 0) {
+      const legacy = (currentCAPNote.meetingTranscript as any).toObject();
+      const migratedDoc = await MeetingTranscriptModel.create({
+        capNoteId: currentCAPNote._id,
+        provider: legacy.provider ?? 'assemblyai',
+        status: legacy.status === 'idle' ? 'completed' : legacy.status,
+        transcriptId: legacy.transcriptId,
+        audioMimeType: legacy.audioMimeType,
+        requestedAt: legacy.requestedAt,
+        completedAt: legacy.completedAt,
+        text: legacy.text,
+        formattedText: legacy.formattedText,
+        utterances: legacy.utterances ?? [],
+        error: legacy.error
+      });
+      if (!currentCAPNote.meetingTranscripts) currentCAPNote.meetingTranscripts = [];
+      currentCAPNote.meetingTranscripts.push(migratedDoc._id);
+      await currentCAPNote.save();
+    }
+  }
+
+  // Fetch all transcripts for this CAP note, newest first
+  const transcriptDocs = await MeetingTranscriptModel.find({
+    capNoteId: currentCAPNote._id
+  }).sort({ requestedAt: -1 });
+  const meetingTranscriptsList = transcriptDocs.map((doc) => {
+    const obj = doc.toObject();
+    return {
+      id: obj._id.toString(),
+      capNoteId: obj.capNoteId?.toString() ?? null,
+      provider: obj.provider,
+      status: obj.status,
+      transcriptId: obj.transcriptId,
+      audioMimeType: obj.audioMimeType,
+      requestedAt: obj.requestedAt,
+      completedAt: obj.completedAt,
+      text: obj.text,
+      formattedText: obj.formattedText,
+      utterances: obj.utterances ?? [],
+      error: obj.error
+    };
+  });
+
   let currentCAPNoteFlattened = serializeDates(
     currentCAPNote.toJSON(mongoIdFlattener)
   );
@@ -1427,7 +1622,7 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
         return practice.toString();
       }
     ),
-    meetingTranscript: currentCAPNoteFlattened.meetingTranscript ?? null
+    meetingTranscripts: meetingTranscriptsList
   };
 
   /**

@@ -4,6 +4,7 @@ import dbConnect from '../../../lib/dbConnect';
 import CAPNoteModel from '../../../models/CAPNoteModel';
 import IssueObjectModel from '../../../models/IssueObjectModel';
 import PracticeGapObjectModel from '../../../models/PracticeGapObjectModel';
+import MeetingTranscriptModel from '../../../models/MeetingTranscriptModel';
 
 export interface AIDraftIssue {
   title: string;
@@ -110,7 +111,7 @@ Append additional context modifiers after the primary tag as needed:
 
 ## People Directory & Name Resolution
 
-A directory of lab members will be provided in the user message. Use it to:
+A directory of DTR (lab) members will be provided in the user message. Use it to:
 - Fuzzy-match spoken names to their full names (e.g., "Haochi" → "Haoqi Zhang", "Jess" → "Jessica Sun")
 - Always write the resolved full name inside w[] tags — never a nickname, never a Slack ID
 - If a name cannot be confidently resolved, write it as heard (e.g., w[Haochi])
@@ -263,7 +264,12 @@ export default async function handler(
       return res.status(404).json({ success: false, error: 'CAP note not found' });
     }
 
-    const transcript = capNote.meetingTranscript?.formattedText;
+    const latestTranscript = await MeetingTranscriptModel.findOne(
+      { capNoteId: id, status: 'completed' },
+      null,
+      { sort: { requestedAt: -1 } }
+    );
+    const transcript = latestTranscript?.formattedText;
     if (!transcript?.trim()) {
       return res.status(400).json({
         success: false,
