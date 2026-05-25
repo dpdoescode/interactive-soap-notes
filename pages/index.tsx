@@ -165,6 +165,11 @@ export default function Home({ sigs, allSigs, quarterStart, quarterEnd }): JSX.E
               <div className="mb-3 grid w-full auto-rows-auto grid-cols-5 gap-y-5 border-b border-black text-xl font-bold">
                 <h2 className="col-span-2">
                   {sig.name} ({sig.abbreviation})
+                  <Link href={`/coach-reflections/${sig.abbreviation}`}>
+                    <span className="ml-3 text-sm font-normal text-blue-600 underline hover:text-blue-800">
+                      Coach Reflections →
+                    </span>
+                  </Link>
                 </h2>
                 <h2 className="col-span-1">Student Reflections</h2>
                 <h2 className="col-span-1">SIG Date</h2>
@@ -190,7 +195,7 @@ export default function Home({ sigs, allSigs, quarterStart, quarterEnd }): JSX.E
                       </Link>
                     </div>
 
-                    {/* Link to Reflection */}
+                    {/* Link to Student Reflection */}
                     <div className="col-span-1">
                       <Link href={`/reflections/${capNote.id}`}>
                         <h3 className="text-md text-blue-600 underline visited:text-purple-600 hover:text-blue-800">

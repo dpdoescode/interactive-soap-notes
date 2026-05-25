@@ -53,6 +53,15 @@ export const shortDateFromISO = (isoString: string): string => {
   });
 };
 
+export const getMondayOfWeek = (date: Date): Date => {
+  const d = new Date(date);
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+};
+
 /**
  * Converts a date-only display string back to a stable ISO date at UTC midnight.
  * This avoids shifting the stored SIG day when users in different timezones save edits.

@@ -5,6 +5,8 @@ import CAPNoteModel from '../../../models/CAPNoteModel';
 import IssueObjectModel from '../../../models/IssueObjectModel';
 import PracticeGapObjectModel from '../../../models/PracticeGapObjectModel';
 import MeetingTranscriptModel from '../../../models/MeetingTranscriptModel';
+import SIGReflectionModel from '../../../models/SIGReflectionModel';
+import { getMondayOfWeek } from '../../../lib/helperFns';
 
 export interface AIDraftIssue {
   title: string;
@@ -282,7 +284,9 @@ const buildUserMessage = (
   projectName: string,
   sigName: string,
   transcript: string,
-  coachReflections: string,
+  reflectionsPre: string,
+  reflectionsMid: string,
+  reflectionsPost: string,
   priorNotesText: string,
   practiceGapsText: string,
   peerCasesText: string,
@@ -309,10 +313,18 @@ const buildUserMessage = (
     msg += `## Prior CAP Notes for This Team\n\n${priorNotesText}\n\n`;
   }
 
+  if (reflectionsPre?.trim()) {
+    msg += `## Coach Pre-Meeting Reflections\n\nWritten after reviewing deliverables and student reflections, before the meeting.\n\n${reflectionsPre.trim()}\n\n`;
+  }
+
   msg += `## Meeting Transcript\n\n${transcript}\n\n`;
 
-  if (coachReflections?.trim()) {
-    msg += `## Coach Post-Meeting Reflections\n\n${coachReflections.trim()}\n\n`;
+  if (reflectionsMid?.trim()) {
+    msg += `## Coach Mid-Meeting Reflections\n\nWritten immediately after this team's turn in the SIG meeting.\n\n${reflectionsMid.trim()}\n\n`;
+  }
+
+  if (reflectionsPost?.trim()) {
+    msg += `## Coach Post-Meeting Reflections\n\nWritten later in the day with more time to reflect.\n\n${reflectionsPost.trim()}\n\n`;
   }
 
   msg += `Return JSON only.`;
@@ -405,11 +417,22 @@ export default async function handler(
     }
 
     const {
-      coachReflections = '',
       followUpMessage = '',
       previousDraft = '',
       allPeople = []
     } = req.body;
+
+    const noteWeek = getMondayOfWeek(new Date(capNote.date));
+    const sigReflection = await SIGReflectionModel.findOne({
+      sigAbbreviation: capNote.sigAbbreviation,
+      weekOf: noteWeek
+    });
+    const teamReflection = sigReflection?.teams?.find(
+      (t: any) => t.capNoteId?.toString() === id
+    );
+    const reflectionsPre = teamReflection?.coachReflections?.pre ?? '';
+    const reflectionsMid = teamReflection?.coachReflections?.mid ?? '';
+    const reflectionsPost = teamReflection?.coachReflections?.post ?? '';
 
     // Fetch same-project notes first, then backfill from other projects so the
     // model always sees at least 2 real coach-written examples for style calibration
@@ -448,7 +471,9 @@ export default async function handler(
       capNote.project,
       capNote.sigName,
       transcript,
-      coachReflections,
+      reflectionsPre,
+      reflectionsMid,
+      reflectionsPost,
       priorNotesText,
       practiceGapsText,
       peerCasesText,
