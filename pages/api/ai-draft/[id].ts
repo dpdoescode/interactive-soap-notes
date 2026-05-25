@@ -24,6 +24,16 @@ type AIDraftResponse = {
   error?: string;
 };
 
+interface PeerCase {
+  project: string;
+  members: string[];
+  practiceGaps: { title: string; description: string }[];
+  issues: {
+    title: string;
+    practices: { practice: string; didHappen: boolean | null }[];
+  }[];
+}
+
 // Real coach-written CAP notes are embedded as few-shot style examples.
 // These teach the model voice, specificity, and format — not format instructions alone.
 const SYSTEM_PROMPT = `You are helping a research coach draft CAP (Context-Assessment-Plan) notes after a student team SIG meeting. Study the two real coach-written examples below and write in the same style.
@@ -100,7 +110,7 @@ Emotional/Motivational: emotional regulation, motivation
 
 Each plan item begins with one primary tag:
 - [plan]: stories, deliverables, or tasks to add to the sprint log
-- [help]: work with a peer or mentor on a practice
+- [help]: work with a specific peer or mentor on a practice. When naming a peer, use the Peer Cases section to find students whose practice gaps, assigned practices, or reflections overlap with the issue you are identifying. Only suggest a name that appears in the Peer Cases section or was explicitly mentioned in the transcript — never pick a name at random from the People Directory.
 - [reflect]: reflect on a situation if it comes up
 - [self-work]: work activity for the student to do on their own
 
@@ -118,11 +128,11 @@ A directory of DTR (lab) members will be provided in the user message. Use it to
 
 ## Rules
 
-1. Context: specific observations. Can include what the coach said or did, what the student said, how they reacted. Direct quotes are good.
-2. Assessment: write in direct coach voice — what you think is going on. Do not write "Hypothesis 1" or embed evidence or confidence levels. Write your read of the situation plainly.
-3. supporting_quotes: pull 2–4 exact or near-exact quotes from the transcript that back up the assessment. These are stored but not shown by default — they will be revealed only when the coach asks.
-4. Plan: can include reflection prompts and specific action items as shown in Example 1. Be as detailed as the meeting warrants. Use tags. No extrapolation beyond what was discussed.
-5. If tracked practice gaps are provided, connect relevant assessment entries to them explicitly.
+1. Context: specific observations from direct quotes rephrased to help the coach make sense of the issue of concern and as evidence for assessments made. It should capture what/how students worked on/struggled with in week leading up to the SIG meeting, what coaches note/critiqued/celebrated about their practice traces, and critiques about how they worked. 
+2. Assessment: write in direct coach voice — what you think is going on beyond practical issues (underlying causes). Make interpretations that are specific to the context and avoid generalizations and write them in a way where a) students can understand and b) coaches/peer can co-regulate with the student/team on assessments. It should capture interpretations about what is driving the behaviors and practices you are seeing, how the students are doing with respect to the regulation gaps, and what is getting in their way of making progress on their project and learning. 
+3. supporting_quotes: pull 2–4 exact or near-exact quotes from the transcript that back up all the context and assessments. These are stored but not shown by default — they will be revealed only when the coach asks.
+4. Plan: Be as detailed as the meeting warrants. Use tags. No extrapolation beyond what was discussed. Can include specific action items as shown in the examples.  Plans must target situational issues and regulation gaps in a challenging and constructive, yet supportive/celebrative way by facilitating the use of cognitive, metacognitive, and emotional strategies, tools and resources utilized in DTR (peers, sprint logs, research canvases, representations for thinking, etc.). The plan should be directly connected to the context and assessment — it should follow logically from them and address the issues identified.
+5. If tracked practice gaps are provided, connect relevant assessment entries to them explicitly. If patterns emerge across past CAP notes of a current practice gap, connect that practice gap to the current issue of concern and assessments. This helps the coach see how the current issue is playing out across meetings and over time, and can help them identify leverage points for coaching around that practice gap. If patterns emerge across CAP notes of an unidentified practice gap, suggest a new practice gap and connect it to the current issue of concern and assessments.
 6. Everything must trace to the transcript. Nothing invented.
 
 ## JSON Output
@@ -156,6 +166,118 @@ const formatPeopleDirectory = (
   return people.map((p) => `- ${p.name}`).join('\n');
 };
 
+const fetchProjectStudentMap = async (): Promise<Record<string, string[]>> => {
+  if (!process.env.STUDIO_API) return {};
+  try {
+    const res = await fetch(`${process.env.STUDIO_API}/projects`);
+    if (!res.ok) return {};
+    const projects = await res.json();
+    if (!Array.isArray(projects)) return {};
+    const map: Record<string, string[]> = {};
+    for (const proj of projects) {
+      if (!proj?.name) continue;
+      map[proj.name] = (proj.students ?? [])
+        .filter((s: any) => s.name)
+        .map((s: any) => String(s.name));
+    }
+    return map;
+  } catch {
+    return {};
+  }
+};
+
+const fetchPeerCases = async (currentProject: string): Promise<PeerCase[]> => {
+  const peerGaps = await PracticeGapObjectModel.find({
+    project: { $ne: currentProject },
+    practiceArchived: false
+  }).lean();
+
+  if (!peerGaps.length) return [];
+
+  const peerProjects = Array.from(new Set((peerGaps as any[]).map((g) => g.project as string)));
+
+  const [peerIssues, projectStudentMap] = await Promise.all([
+    IssueObjectModel.find({
+      project: { $in: peerProjects },
+      wasDeleted: false,
+      wasMerged: false
+    })
+      .select('project title followUps')
+      .lean(),
+    fetchProjectStudentMap()
+  ]);
+
+  const byProject: Record<string, PeerCase> = {};
+
+  for (const gap of peerGaps as any[]) {
+    if (!byProject[gap.project]) {
+      byProject[gap.project] = {
+        project: gap.project,
+        members: projectStudentMap[gap.project] ?? [],
+        practiceGaps: [],
+        issues: []
+      };
+    }
+    byProject[gap.project].practiceGaps.push({
+      title: gap.title,
+      description: gap.description
+    });
+  }
+
+  for (const issue of peerIssues as any[]) {
+    if (!byProject[issue.project]) continue;
+    byProject[issue.project].issues.push({
+      title: issue.title,
+      practices: (issue.followUps ?? [])
+        .filter((fu: any) => fu.practice?.trim())
+        .map((fu: any) => ({
+          practice: fu.practice as string,
+          didHappen: (fu.outcome?.didHappen ?? null) as boolean | null
+        }))
+    });
+  }
+
+  return Object.values(byProject);
+};
+
+const formatPeerCases = (cases: PeerCase[]): string => {
+  if (!cases.length) return '';
+
+  return cases
+    .map((c) => {
+      const memberLine = c.members.length ? ` — Members: ${c.members.join(', ')}` : '';
+
+      const gapsText = c.practiceGaps
+        .map((g) => `  - ${g.title}: ${g.description}`)
+        .join('\n');
+
+      const issuesText = c.issues
+        .map((iss) => {
+          const practiceLines = iss.practices
+            .map((p) => {
+              const status =
+                p.didHappen === true
+                  ? 'completed'
+                  : p.didHappen === false
+                  ? 'not completed'
+                  : 'pending';
+              return `    • "${p.practice}" [${status}]`;
+            })
+            .join('\n');
+          return practiceLines
+            ? `  - "${iss.title}"\n${practiceLines}`
+            : `  - "${iss.title}"`;
+        })
+        .join('\n');
+
+      const parts = [`**${c.project}**${memberLine}`];
+      if (gapsText) parts.push(`Practice gaps:\n${gapsText}`);
+      if (issuesText) parts.push(`Issues of concern:\n${issuesText}`);
+      return parts.join('\n');
+    })
+    .join('\n\n---\n\n');
+};
+
 const buildUserMessage = (
   projectName: string,
   sigName: string,
@@ -163,6 +285,7 @@ const buildUserMessage = (
   coachReflections: string,
   priorNotesText: string,
   practiceGapsText: string,
+  peerCasesText: string,
   allPeople: { name: string; slack_id: string }[]
 ): string => {
   let msg = `Generate CAP notes for the following meeting. Write in the same style as the examples — direct, specific, coach-voice.\n\n`;
@@ -176,6 +299,10 @@ const buildUserMessage = (
 
   if (practiceGapsText) {
     msg += `## Tracked Practice Gaps for This Team\n\n${practiceGapsText}\n\n`;
+  }
+
+  if (peerCasesText) {
+    msg += `## Peer Cases — Other Students in the Lab\n\nThese students have been working through similar challenges. When drafting [help] plan items, look for students here whose practice gaps, assigned practices, or reflections overlap with the issues you are identifying. Use the People Directory to resolve their full names for w[] tags.\n\n${peerCasesText}\n\n`;
   }
 
   if (priorNotesText) {
@@ -305,13 +432,17 @@ export default async function handler(
       priorNotes = [...priorNotes, ...backfill];
     }
 
-    const activeGaps = await PracticeGapObjectModel.find({
-      project: capNote.project,
-      practiceArchived: false
-    }).sort({ lastUpdated: -1 });
+    const [activeGaps, peerCases] = await Promise.all([
+      PracticeGapObjectModel.find({
+        project: capNote.project,
+        practiceArchived: false
+      }).sort({ lastUpdated: -1 }),
+      fetchPeerCases(capNote.project)
+    ]);
 
     const priorNotesText = formatPriorNotes(priorNotes);
     const practiceGapsText = formatPracticeGaps(activeGaps);
+    const peerCasesText = formatPeerCases(peerCases);
 
     const initialUserMessage = buildUserMessage(
       capNote.project,
@@ -320,6 +451,7 @@ export default async function handler(
       coachReflections,
       priorNotesText,
       practiceGapsText,
+      peerCasesText,
       allPeople
     );
 
