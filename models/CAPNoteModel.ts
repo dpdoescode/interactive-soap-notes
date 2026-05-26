@@ -34,6 +34,7 @@ export interface CAPStruct {
   currentIssues: Types.ObjectId[];
   trackedPractices: Types.ObjectId[];
   meetingTranscripts: Types.ObjectId[];
+  aiDrafts: Types.ObjectId[];
   /** @deprecated migrated to meetingTranscripts collection */
   meetingTranscript?: MeetingTranscriptStruct | null;
 }
@@ -155,6 +156,12 @@ const CAPNote = new mongoose.Schema<CAPStruct>({
     {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'MeetingTranscript'
+    }
+  ],
+  aiDrafts: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AIDraft'
     }
   ],
   meetingTranscript: {

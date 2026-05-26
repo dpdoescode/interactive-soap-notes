@@ -58,7 +58,8 @@ export default async function handler(
               headers: {
                 'Content-Type': 'application/json'
               },
-              body: JSON.stringify({ projectName: noteInfo.project })
+              body: JSON.stringify({ projectName: noteInfo.project }),
+              signal: AbortSignal.timeout(8000)
             }
           );
           const orgObjs = await orgObjRes.json();

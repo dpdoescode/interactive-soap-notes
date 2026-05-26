@@ -6,6 +6,7 @@ import IssueObjectModel from '../../../models/IssueObjectModel';
 import PracticeGapObjectModel from '../../../models/PracticeGapObjectModel';
 import MeetingTranscriptModel from '../../../models/MeetingTranscriptModel';
 import SIGReflectionModel from '../../../models/SIGReflectionModel';
+import AIDraftModel from '../../../models/AIDraftModel';
 import { getMondayOfWeek } from '../../../lib/helperFns';
 
 export interface AIDraftIssue {
@@ -23,6 +24,14 @@ export interface AIDraftOutput {
 type AIDraftResponse = {
   success: boolean;
   data?: AIDraftOutput;
+  draftId?: string;
+  version?: number;
+  error?: string;
+};
+
+type AIDraftListResponse = {
+  success: boolean;
+  data?: { id: string; version: number; generatedAt: string; followUpMessage: string | null; issues: AIDraftIssue[] }[];
   error?: string;
 };
 
@@ -160,6 +169,20 @@ Return a JSON object only — no markdown wrapping. Structure:
     }
   ]
 }`;
+
+const fetchAllPeople = async (): Promise<{ name: string; slack_id: string }[]> => {
+  if (!process.env.STUDIO_API) return [];
+  try {
+    const res = await fetch(`${process.env.STUDIO_API}/people`);
+    if (!res.ok) return [];
+    const people = await res.json();
+    return Array.isArray(people)
+      ? people.filter((p: any) => p.name && p.slack_id).map((p: any) => ({ name: String(p.name), slack_id: String(p.slack_id) }))
+      : [];
+  } catch {
+    return [];
+  }
+};
 
 const formatPeopleDirectory = (
   people: { name: string; slack_id: string }[]
@@ -375,23 +398,41 @@ const formatPracticeGaps = (gaps: any[]): string => {
 
 export default async function handler(
   req: NextApiRequest,
-  res: NextApiResponse<AIDraftResponse>
+  res: NextApiResponse<AIDraftResponse | AIDraftListResponse>
 ) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ success: false, error: 'Method not allowed' });
-  }
-
   const { id } = req.query;
   if (typeof id !== 'string') {
     return res.status(400).json({ success: false, error: 'Invalid CAP note id' });
+  }
+
+  await dbConnect();
+
+  if (req.method === 'GET') {
+    try {
+      const drafts = await AIDraftModel.find({ capNoteId: id }).sort({ generatedAt: -1 });
+      return res.status(200).json({
+        success: true,
+        data: drafts.map((d) => ({
+          id: d._id.toString(),
+          version: d.version,
+          generatedAt: d.generatedAt,
+          followUpMessage: d.followUpMessage,
+          issues: d.issues as AIDraftIssue[]
+        }))
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: 'Failed to fetch drafts' });
+    }
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
 
   const apiKey = process.env.CHATGPT_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ success: false, error: 'CHATGPT_API_KEY is not configured' });
   }
-
-  await dbConnect();
 
   try {
     const capNote = await CAPNoteModel.findById(id).populate({
@@ -419,7 +460,8 @@ export default async function handler(
     const {
       followUpMessage = '',
       previousDraft = '',
-      allPeople = []
+      allPeople: bodyPeople = [],
+      autoTriggered = false
     } = req.body;
 
     const noteWeek = getMondayOfWeek(new Date(capNote.date));
@@ -433,6 +475,26 @@ export default async function handler(
     const reflectionsPre = teamReflection?.coachReflections?.pre ?? '';
     const reflectionsMid = teamReflection?.coachReflections?.mid ?? '';
     const reflectionsPost = teamReflection?.coachReflections?.post ?? '';
+
+    if (!reflectionsPre.trim() || !reflectionsMid.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'REFLECTIONS_REQUIRED'
+      });
+    }
+
+    if (autoTriggered) {
+      const SETTLE_MS = 5 * 60 * 1000;
+      const lastSaved = teamReflection?.lastReflectionSavedAt;
+      if (!lastSaved || Date.now() - new Date(lastSaved).getTime() < SETTLE_MS) {
+        return res.status(400).json({ success: false, error: 'REFLECTIONS_SETTLING' });
+      }
+    }
+
+    const allPeople: { name: string; slack_id: string }[] =
+      Array.isArray(bodyPeople) && bodyPeople.length > 0
+        ? bodyPeople
+        : await fetchAllPeople();
 
     // Fetch same-project notes first, then backfill from other projects so the
     // model always sees at least 2 real coach-written examples for style calibration
@@ -521,7 +583,24 @@ export default async function handler(
       return res.status(500).json({ success: false, error: 'Model returned invalid JSON' });
     }
 
-    return res.status(200).json({ success: true, data: parsed });
+    const existingCount = await AIDraftModel.countDocuments({ capNoteId: id });
+    const newDraft = await AIDraftModel.create({
+      capNoteId: capNote._id,
+      version: existingCount + 1,
+      generatedAt: new Date().toISOString(),
+      issues: parsed.issues,
+      followUpMessage: followUpMessage?.trim() || null
+    });
+    capNote.aiDrafts = capNote.aiDrafts ?? [];
+    capNote.aiDrafts.push(newDraft._id);
+    await capNote.save();
+
+    return res.status(200).json({
+      success: true,
+      data: parsed,
+      draftId: newDraft._id.toString(),
+      version: newDraft.version
+    });
   } catch (error) {
     console.error('Error generating AI draft:', error);
     return res.status(500).json({

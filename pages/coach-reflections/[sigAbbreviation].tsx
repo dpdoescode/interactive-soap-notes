@@ -92,6 +92,7 @@ function TeamSection({
       const json = await res.json();
       if (!json.success) throw new Error(json.error ?? 'Save failed');
       onSaveEnd(null);
+
     } catch (e: any) {
       onSaveEnd(e.message ?? 'Unknown error');
     }

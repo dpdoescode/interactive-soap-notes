@@ -105,6 +105,10 @@ export default function CAPNote({
   const [showAIDraft, setShowAIDraft] = useState(false);
   const [coachReflections, setCoachReflections] = useState('');
   const [aiDraft, setAiDraft] = useState<AIDraftOutput | null>(null);
+  const [aiDraftVersion, setAiDraftVersion] = useState<number | null>(null);
+  const [aiDraftTotalVersions, setAiDraftTotalVersions] = useState(0);
+  const [aiDraftVersions, setAiDraftVersions] = useState<any[]>([]);
+  const [expandedDraftIds, setExpandedDraftIds] = useState<Set<string>>(new Set());
   const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [followUpInput, setFollowUpInput] = useState('');
@@ -194,6 +198,84 @@ export default function CAPNote({
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
+
+  const draftsLoaded = useRef(false);
+  const autoGenTriggered = useRef(false);
+
+  // load saved AI drafts on mount; if none exist and transcript is complete, attempt auto-generation
+  // (server enforces reflections guard — silently skips if not filled yet)
+  useEffect(() => {
+    fetch(`/api/ai-draft/${noteInfo.id}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success && data.data?.length > 0) {
+          const latest = data.data[0];
+          setAiDraft({ issues: latest.issues });
+          setAiDraftVersion(latest.version);
+          setAiDraftTotalVersions(data.data.length);
+          setAiDraftVersions(data.data);
+        } else {
+          // No draft yet — attempt auto-generate if transcript is already complete
+          const hasCompletedTranscript = (capNoteInfo.meetingTranscripts ?? []).some(
+            (t: any) => t.status === 'completed' && t.formattedText
+          );
+          if (hasCompletedTranscript && !autoGenTriggered.current) {
+            autoGenTriggered.current = true;
+            generateDraft(true);
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => { draftsLoaded.current = true; });
+  // generateDraft is stable — defined once per mount; intentionally excluded from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteInfo.id]);
+
+  const generateDraft = async (isAutoTriggered = false) => {
+    setIsGeneratingDraft(true);
+    setDraftError(null);
+    setShowEvidence({});
+    try {
+      const res = await fetch(`/api/ai-draft/${noteInfo.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allPeople, autoTriggered: isAutoTriggered })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        if (data.error === 'REFLECTIONS_REQUIRED' || data.error === 'REFLECTIONS_SETTLING') return;
+        throw new Error(data.error ?? 'Failed to generate draft');
+      }
+      setAiDraft(data.data);
+      setAiDraftVersion(data.version ?? null);
+      setAiDraftTotalVersions((prev) => prev + 1);
+      setAiDraftVersions((prev) => [
+        { id: data.draftId, version: data.version, generatedAt: new Date().toISOString(), followUpMessage: null, issues: data.data.issues },
+        ...prev
+      ]);
+      setFollowUpInput('');
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setIsGeneratingDraft(false);
+    }
+  };
+
+  // auto-trigger generation when transcript first completes and no draft exists yet
+  useEffect(() => {
+    const latestTranscript = meetingTranscripts[0];
+    if (
+      latestTranscript?.status === 'completed' &&
+      draftsLoaded.current &&
+      aiDraftVersions.length === 0 &&
+      !isGeneratingDraft &&
+      !autoGenTriggered.current
+    ) {
+      autoGenTriggered.current = true;
+      generateDraft(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingTranscripts, aiDraftVersions.length, isGeneratingDraft]);
 
   const startRecording = async () => {
     try {
@@ -943,54 +1025,23 @@ export default function CAPNote({
                 (verbatim from meeting) for each issue it identifies.
               </p>
 
+              {/* Blocking status messages */}
               {!meetingTranscripts.some((t: any) => t.status === 'completed' && t.formattedText) && (
                 <p className="mb-3 rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
-                  No transcript found. Record and process a meeting first using the Meeting
-                  Recording panel above.
+                  Waiting for transcript — record and process the meeting first.
                 </p>
               )}
-
-              {/* Coach reflections input */}
-              <div className="mb-3">
-                <label className="mb-1 block text-sm font-semibold text-slate-700">
-                  Coach Post-Meeting Reflections (optional)
-                </label>
-                <textarea
-                  className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-violet-400 focus:outline-none"
-                  rows={3}
-                  placeholder="Add any observations or context from after the meeting that aren't in the transcript..."
-                  value={coachReflections}
-                  onChange={(e) => setCoachReflections(e.target.value)}
-                  disabled={isGeneratingDraft}
-                />
-              </div>
+              {meetingTranscripts.some((t: any) => t.status === 'completed' && t.formattedText) && isGeneratingDraft && !aiDraft && (
+                <p className="mb-3 rounded border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-700">
+                  Auto-generating draft — both transcript and reflections are ready.
+                </p>
+              )}
 
               {/* Generate button */}
               <button
                 className="rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
                 disabled={isGeneratingDraft || !meetingTranscripts.some((t: any) => t.status === 'completed' && t.formattedText)}
-                onClick={async () => {
-                  setIsGeneratingDraft(true);
-                  setDraftError(null);
-                  setShowEvidence({});
-                  try {
-                    const res = await fetch(`/api/ai-draft/${noteInfo.id}`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ coachReflections, allPeople })
-                    });
-                    const data = await res.json();
-                    if (!res.ok || !data.success) {
-                      throw new Error(data.error ?? 'Failed to generate draft');
-                    }
-                    setAiDraft(data.data);
-                    setFollowUpInput('');
-                  } catch (err) {
-                    setDraftError(err instanceof Error ? err.message : 'Unknown error');
-                  } finally {
-                    setIsGeneratingDraft(false);
-                  }
-                }}
+                onClick={() => generateDraft(false)}
               >
                 {isGeneratingDraft ? 'Generating...' : aiDraft ? 'Regenerate Draft' : 'Generate Draft'}
               </button>
@@ -1005,6 +1056,11 @@ export default function CAPNote({
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-bold text-slate-700">
                       Generated Draft — {aiDraft.issues.length} issue{aiDraft.issues.length !== 1 ? 's' : ''}
+                      {aiDraftVersion !== null && (
+                        <span className="ml-2 text-xs font-normal text-slate-400">
+                          v{aiDraftVersion}{aiDraftTotalVersions > 1 ? ` of ${aiDraftTotalVersions}` : ''}
+                        </span>
+                      )}
                     </h3>
                     <button
                       className="text-xs text-slate-400 underline hover:text-slate-600"
@@ -1043,12 +1099,22 @@ export default function CAPNote({
                           <div className="px-3 py-2">
                             <div className="mb-1 flex items-center justify-between">
                               <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Context</p>
-                              <button
-                                className="text-xs text-slate-400 underline hover:text-slate-600"
-                                onClick={() => navigator.clipboard.writeText(issue.context.map(c => `- ${c}`).join('\n'))}
-                              >
-                                Copy
-                              </button>
+                              <div className="flex gap-2">
+                                {issue.supporting_quotes?.length > 0 && (
+                                  <button
+                                    className="text-xs text-violet-500 underline hover:text-violet-700"
+                                    onClick={() => setShowEvidence(prev => ({ ...prev, [`ctx-${i}`]: !prev[`ctx-${i}`] }))}
+                                  >
+                                    {showEvidence[`ctx-${i}`] ? 'Hide evidence' : 'Show evidence'}
+                                  </button>
+                                )}
+                                <button
+                                  className="text-xs text-slate-400 underline hover:text-slate-600"
+                                  onClick={() => navigator.clipboard.writeText(issue.context.map(c => `- ${c}`).join('\n'))}
+                                >
+                                  Copy
+                                </button>
+                              </div>
                             </div>
                             <ul className="space-y-1 text-slate-700">
                               {issue.context.map((c, j) => (
@@ -1058,6 +1124,14 @@ export default function CAPNote({
                                 </li>
                               ))}
                             </ul>
+                            {showEvidence[`ctx-${i}`] && issue.supporting_quotes?.length > 0 && (
+                              <div className="mt-2 space-y-1 rounded bg-violet-50 p-2">
+                                <p className="text-xs font-semibold text-violet-600">Supporting quotes from transcript</p>
+                                {issue.supporting_quotes.map((q, j) => (
+                                  <p key={j} className="text-xs italic text-slate-600">"{q}"</p>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -1167,6 +1241,12 @@ export default function CAPNote({
                               const data = await res.json();
                               if (!res.ok || !data.success) throw new Error(data.error ?? 'Failed to refine');
                               setAiDraft(data.data);
+                              setAiDraftVersion(data.version ?? null);
+                              setAiDraftTotalVersions((prev) => prev + 1);
+                              setAiDraftVersions((prev) => [
+                                { id: data.draftId, version: data.version, generatedAt: new Date().toISOString(), followUpMessage: followUpInput, issues: data.data.issues },
+                                ...prev
+                              ]);
                               setFollowUpInput('');
                               setShowEvidence({});
                             } catch (err) {
@@ -1197,6 +1277,12 @@ export default function CAPNote({
                             const data = await res.json();
                             if (!res.ok || !data.success) throw new Error(data.error ?? 'Failed to refine');
                             setAiDraft(data.data);
+                            setAiDraftVersion(data.version ?? null);
+                            setAiDraftTotalVersions((prev) => prev + 1);
+                            setAiDraftVersions((prev) => [
+                              { id: data.draftId, version: data.version, generatedAt: new Date().toISOString(), followUpMessage: followUpInput, issues: data.data.issues },
+                              ...prev
+                            ]);
                             setFollowUpInput('');
                             setShowEvidence({});
                           } catch (err) {
@@ -1210,6 +1296,76 @@ export default function CAPNote({
                       </button>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Previous draft versions */}
+              {aiDraftVersions.length > 1 && (
+                <div className="mt-4">
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Previous Drafts ({aiDraftVersions.length - 1})
+                  </h3>
+                  {aiDraftVersions.slice(1).map((d: any) => (
+                    <div key={d.id} className="mb-2 rounded border border-slate-200 bg-white">
+                      <button
+                        className="flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+                        onClick={() =>
+                          setExpandedDraftIds((prev) => {
+                            const next = new Set(prev);
+                            next.has(d.id) ? next.delete(d.id) : next.add(d.id);
+                            return next;
+                          })
+                        }
+                      >
+                        <span className="font-medium text-slate-700">
+                          Draft v{d.version}
+                          {d.generatedAt ? ` — ${new Date(d.generatedAt).toLocaleDateString()}` : ''}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {d.followUpMessage && (
+                            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700">Refined</span>
+                          )}
+                          <span className="text-slate-400">{expandedDraftIds.has(d.id) ? '▲' : '▼'}</span>
+                        </div>
+                      </button>
+                      {expandedDraftIds.has(d.id) && (
+                        <div className="border-t border-slate-100 px-3 pb-3 pt-2 space-y-3">
+                          {d.followUpMessage && (
+                            <p className="text-xs italic text-slate-500">Refinement prompt: "{d.followUpMessage}"</p>
+                          )}
+                          {d.issues.map((issue: AIDraftIssue, i: number) => (
+                            <div key={i} className="rounded border border-slate-200 bg-slate-50 p-2">
+                              <p className="text-xs font-bold text-slate-700">{issue.title}</p>
+                              {issue.context.length > 0 && (
+                                <div className="mt-1">
+                                  <p className="text-xs font-semibold text-slate-500">Context</p>
+                                  <ul className="mt-0.5 list-disc pl-4">
+                                    {issue.context.map((c, j) => <li key={j} className="text-xs text-slate-700">{c}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {issue.assessment.length > 0 && (
+                                <div className="mt-1">
+                                  <p className="text-xs font-semibold text-slate-500">Assessment</p>
+                                  <ul className="mt-0.5 list-disc pl-4">
+                                    {issue.assessment.map((a, j) => <li key={j} className="text-xs text-slate-700">{a}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {issue.plan.length > 0 && (
+                                <div className="mt-1">
+                                  <p className="text-xs font-semibold text-slate-500">Plan</p>
+                                  <ul className="mt-0.5 list-disc pl-4">
+                                    {issue.plan.map((p, j) => <li key={j} className="text-xs text-slate-700">{p}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1637,7 +1793,8 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ projectName: currentCAPNote.project })
+        body: JSON.stringify({ projectName: currentCAPNote.project }),
+        signal: AbortSignal.timeout(8000)
       }
     );
 
@@ -1674,8 +1831,8 @@ export const getServerSideProps: GetServerSideProps = async (query) => {
   let allPeople: { name: string; slack_id: string }[] = [];
   try {
     const [sigsRes, peopleRes] = await Promise.all([
-      fetch(`${process.env.STUDIO_API}/socialStructures/sigs`),
-      fetch(`${process.env.STUDIO_API}/people`)
+      fetch(`${process.env.STUDIO_API}/socialStructures/sigs`, { signal: AbortSignal.timeout(8000) }),
+      fetch(`${process.env.STUDIO_API}/people`, { signal: AbortSignal.timeout(8000) })
     ]);
 
     if (sigsRes.ok) {

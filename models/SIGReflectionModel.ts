@@ -4,6 +4,7 @@ export interface TeamReflectionStruct {
   project: string;
   capNoteId: mongoose.Types.ObjectId;
   coachReflections: { pre: string; mid: string; post: string };
+  lastReflectionSavedAt: string | null;
 }
 
 export interface SIGReflectionStruct {
@@ -21,7 +22,8 @@ const TeamReflectionSchema = new mongoose.Schema<TeamReflectionStruct>(
       pre: { type: String, default: '' },
       mid: { type: String, default: '' },
       post: { type: String, default: '' }
-    }
+    },
+    lastReflectionSavedAt: { type: String, default: null }
   },
   { _id: false }
 );

@@ -36,16 +36,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       reflection = await SIGReflectionModel.create({
         sigAbbreviation,
         weekOf: week,
-        teams: [{ project, capNoteId, coachReflections }]
+        teams: [{ project, capNoteId, coachReflections, lastReflectionSavedAt: new Date().toISOString() }]
       });
       return res.status(200).json({ success: true, data: reflection });
     }
 
     const teamIndex = reflection.teams.findIndex((t) => t.capNoteId?.toString() === capNoteId);
     if (teamIndex === -1) {
-      reflection.teams.push({ project, capNoteId, coachReflections } as any);
+      reflection.teams.push({ project, capNoteId, coachReflections, lastReflectionSavedAt: new Date().toISOString() } as any);
     } else {
       reflection.teams[teamIndex].coachReflections = coachReflections;
+      reflection.teams[teamIndex].lastReflectionSavedAt = new Date().toISOString();
     }
     await reflection.save();
     return res.status(200).json({ success: true, data: reflection });
