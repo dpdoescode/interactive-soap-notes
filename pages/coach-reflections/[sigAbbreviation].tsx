@@ -10,16 +10,10 @@ import ExclamationCircleIcon from '@heroicons/react/24/outline/ExclamationCircle
 import { longDate, shortDateFromISO, getMondayOfWeek } from '../../lib/helperFns';
 import { useTeamRecording, TranscriptEntry } from '../../lib/useTeamRecording';
 
-interface CoachReflections {
-  pre: string;
-  mid: string;
-  post: string;
-}
-
 interface TeamData {
   project: string;
   capNoteId: string;
-  coachReflections: CoachReflections;
+  coachReflections: string;
   transcripts: TranscriptEntry[];
   members: string[];
 }
@@ -38,24 +32,6 @@ interface PageProps {
   weekOptions: WeekOption[];
 }
 
-const phases: { key: keyof CoachReflections; label: string; hint: string }[] = [
-  {
-    key: 'pre',
-    label: 'Pre-Meeting',
-    hint: 'After reviewing deliverables and student reflections, before the meeting.'
-  },
-  {
-    key: 'mid',
-    label: 'Mid-Meeting',
-    hint: "Immediately after this team's turn in the SIG meeting."
-  },
-  {
-    key: 'post',
-    label: 'Post-Meeting',
-    hint: 'Later in the day with more time to reflect.'
-  }
-];
-
 // ─── Per-team section ────────────────────────────────────────────────────────
 
 function TeamSection({
@@ -73,10 +49,10 @@ function TeamSection({
 }) {
   const recording = useTeamRecording(team.capNoteId, team.transcripts, team.members);
   const [showRecording, setShowRecording] = useState(false);
-  const [reflections, setReflections] = useState<CoachReflections>(team.coachReflections);
+  const [reflections, setReflections] = useState<string>(team.coachReflections);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const save = async (updated: CoachReflections) => {
+  const save = async (updated: string) => {
     onSaveStart();
     try {
       const res = await fetch(`/api/sig-reflection/${sigAbbreviation}`, {
@@ -92,17 +68,15 @@ function TeamSection({
       const json = await res.json();
       if (!json.success) throw new Error(json.error ?? 'Save failed');
       onSaveEnd(null);
-
     } catch (e: any) {
       onSaveEnd(e.message ?? 'Unknown error');
     }
   };
 
-  const handleChange = (field: keyof CoachReflections, value: string) => {
-    const updated = { ...reflections, [field]: value };
-    setReflections(updated);
+  const handleChange = (value: string) => {
+    setReflections(value);
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => save(updated), 1200);
+    saveTimer.current = setTimeout(() => save(value), 1200);
   };
 
   const {
@@ -440,20 +414,18 @@ function TeamSection({
         </div>
 
         {/* ── Coach reflections ────────────────────────────────────────── */}
-        <div className="flex flex-col gap-5">
-          {phases.map(({ key, label, hint }) => (
-            <div key={key}>
-              <h3 className="mb-0.5 text-sm font-bold">{label}</h3>
-              <p className="mb-1 text-xs text-slate-500">{hint}</p>
-              <textarea
-                className="w-full rounded border p-2 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-300"
-                rows={4}
-                value={reflections[key]}
-                onChange={(e) => handleChange(key, e.target.value)}
-                placeholder={`${label} reflection…`}
-              />
-            </div>
-          ))}
+        <div>
+          <h3 className="mb-0.5 text-sm font-bold">Reflections</h3>
+          <p className="mb-1 text-xs text-slate-500">
+            Write your thoughts before the meeting starts, then add more right after this team&apos;s turn ends.
+          </p>
+          <textarea
+            className="w-full rounded border p-2 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-300"
+            rows={6}
+            value={reflections}
+            onChange={(e) => handleChange(e.target.value)}
+            placeholder="Reflections…"
+          />
         </div>
       </div>
     </div>
@@ -717,11 +689,9 @@ export const getServerSideProps: GetServerSideProps = async ({ params, query }) 
       return {
         project: note.project,
         capNoteId: noteId,
-        coachReflections: {
-          pre: teamReflection?.coachReflections?.pre ?? '',
-          mid: teamReflection?.coachReflections?.mid ?? '',
-          post: teamReflection?.coachReflections?.post ?? ''
-        },
+        coachReflections: typeof teamReflection?.coachReflections === 'string'
+          ? teamReflection.coachReflections
+          : '',
         transcripts,
         members: sigMembers.map((m) => m.name)
       };

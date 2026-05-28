@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 export interface TeamReflectionStruct {
   project: string;
   capNoteId: mongoose.Types.ObjectId;
-  coachReflections: { pre: string; mid: string; post: string };
+  coachReflections: string;
   lastReflectionSavedAt: string | null;
 }
 
@@ -18,11 +18,7 @@ const TeamReflectionSchema = new mongoose.Schema<TeamReflectionStruct>(
   {
     project: { type: String, required: true },
     capNoteId: { type: mongoose.Schema.Types.ObjectId, ref: 'CAPNote', required: true },
-    coachReflections: {
-      pre: { type: String, default: '' },
-      mid: { type: String, default: '' },
-      post: { type: String, default: '' }
-    },
+    coachReflections: { type: String, default: '' },
     lastReflectionSavedAt: { type: String, default: null }
   },
   { _id: false }

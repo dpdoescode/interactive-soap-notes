@@ -24,32 +24,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (req.method === 'PATCH') {
     const { weekOf, project, capNoteId, coachReflections } = req.body;
-    if (!weekOf || !project || !capNoteId || !coachReflections) {
+    if (!weekOf || !project || !capNoteId || coachReflections === undefined) {
       return res
         .status(400)
         .json({ success: false, error: 'weekOf, project, capNoteId, and coachReflections required' });
     }
-    const week = getMondayOfWeek(new Date(weekOf));
+    try {
+      const week = getMondayOfWeek(new Date(weekOf));
 
-    let reflection = await SIGReflectionModel.findOne({ sigAbbreviation, weekOf: week });
-    if (!reflection) {
-      reflection = await SIGReflectionModel.create({
-        sigAbbreviation,
-        weekOf: week,
-        teams: [{ project, capNoteId, coachReflections, lastReflectionSavedAt: new Date().toISOString() }]
-      });
+      let reflection = await SIGReflectionModel.findOne({ sigAbbreviation, weekOf: week });
+      if (!reflection) {
+        reflection = await SIGReflectionModel.create({
+          sigAbbreviation,
+          weekOf: week,
+          teams: [{ project, capNoteId, coachReflections, lastReflectionSavedAt: new Date().toISOString() }]
+        });
+        return res.status(200).json({ success: true, data: reflection });
+      }
+
+      const teamIndex = reflection.teams.findIndex((t) => t.capNoteId?.toString() === capNoteId);
+      if (teamIndex === -1) {
+        reflection.teams.push({ project, capNoteId, coachReflections, lastReflectionSavedAt: new Date().toISOString() } as any);
+      } else {
+        reflection.teams[teamIndex].coachReflections = coachReflections;
+        reflection.teams[teamIndex].lastReflectionSavedAt = new Date().toISOString();
+      }
+      await reflection.save();
       return res.status(200).json({ success: true, data: reflection });
+    } catch (err) {
+      console.error('PATCH sig-reflection error:', err);
+      return res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
-
-    const teamIndex = reflection.teams.findIndex((t) => t.capNoteId?.toString() === capNoteId);
-    if (teamIndex === -1) {
-      reflection.teams.push({ project, capNoteId, coachReflections, lastReflectionSavedAt: new Date().toISOString() } as any);
-    } else {
-      reflection.teams[teamIndex].coachReflections = coachReflections;
-      reflection.teams[teamIndex].lastReflectionSavedAt = new Date().toISOString();
-    }
-    await reflection.save();
-    return res.status(200).json({ success: true, data: reflection });
   }
 
   return res.status(405).json({ success: false, error: 'Method not allowed' });

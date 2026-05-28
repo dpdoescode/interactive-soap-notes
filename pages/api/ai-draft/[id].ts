@@ -307,9 +307,7 @@ const buildUserMessage = (
   projectName: string,
   sigName: string,
   transcript: string,
-  reflectionsPre: string,
-  reflectionsMid: string,
-  reflectionsPost: string,
+  reflections: string,
   priorNotesText: string,
   practiceGapsText: string,
   peerCasesText: string,
@@ -336,19 +334,11 @@ const buildUserMessage = (
     msg += `## Prior CAP Notes for This Team\n\n${priorNotesText}\n\n`;
   }
 
-  if (reflectionsPre?.trim()) {
-    msg += `## Coach Pre-Meeting Reflections\n\nWritten after reviewing deliverables and student reflections, before the meeting.\n\n${reflectionsPre.trim()}\n\n`;
+  if (reflections?.trim()) {
+    msg += `## Coach Reflections\n\n${reflections.trim()}\n\n`;
   }
 
   msg += `## Meeting Transcript\n\n${transcript}\n\n`;
-
-  if (reflectionsMid?.trim()) {
-    msg += `## Coach Mid-Meeting Reflections\n\nWritten immediately after this team's turn in the SIG meeting.\n\n${reflectionsMid.trim()}\n\n`;
-  }
-
-  if (reflectionsPost?.trim()) {
-    msg += `## Coach Post-Meeting Reflections\n\nWritten later in the day with more time to reflect.\n\n${reflectionsPost.trim()}\n\n`;
-  }
 
   msg += `Return JSON only.`;
   return msg;
@@ -472,11 +462,11 @@ export default async function handler(
     const teamReflection = sigReflection?.teams?.find(
       (t: any) => t.capNoteId?.toString() === id
     );
-    const reflectionsPre = teamReflection?.coachReflections?.pre ?? '';
-    const reflectionsMid = teamReflection?.coachReflections?.mid ?? '';
-    const reflectionsPost = teamReflection?.coachReflections?.post ?? '';
+    const reflections = typeof teamReflection?.coachReflections === 'string'
+      ? teamReflection.coachReflections
+      : '';
 
-    if (!reflectionsPre.trim() || !reflectionsMid.trim()) {
+    if (!reflections.trim()) {
       return res.status(400).json({
         success: false,
         error: 'REFLECTIONS_REQUIRED'
@@ -533,9 +523,7 @@ export default async function handler(
       capNote.project,
       capNote.sigName,
       transcript,
-      reflectionsPre,
-      reflectionsMid,
-      reflectionsPost,
+      reflections,
       priorNotesText,
       practiceGapsText,
       peerCasesText,
