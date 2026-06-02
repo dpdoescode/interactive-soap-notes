@@ -611,6 +611,21 @@ export default async function handler(
     capNote.aiDrafts.push(newDraft._id);
     await capNote.save();
 
+    // Notify SIG head via Slack DM (fire-and-forget — don't block the response)
+    if (process.env.STUDIO_API) {
+      fetch(`${process.env.STUDIO_API}/slack/notifyDraftReady`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          capNoteId: id,
+          project: capNote.project,
+          sigAbbreviation: capNote.sigAbbreviation,
+          sigDate: capNote.date,
+          issueTitles: parsed.issues.map((i) => i.title)
+        })
+      }).catch((err) => console.error('Failed to notify Slack of draft ready:', err));
+    }
+
     return res.status(200).json({
       success: true,
       data: parsed,
