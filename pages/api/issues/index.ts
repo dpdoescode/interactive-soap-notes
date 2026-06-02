@@ -1,6 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { updateIssueObject } from '../../../controllers/issueObjects/updateIssueObject';
-import { IssueObjectStruct } from '../../../models/IssueObjectModel';
+import IssueObjectModel, { IssueObjectStruct } from '../../../models/IssueObjectModel';
+import dbConnect from '../../../lib/dbConnect';
 
 import {
   createPostSigMessage,
@@ -292,6 +293,19 @@ export default async function handler(
           error: error
         });
       }
+    case 'DELETE': {
+      const { ids } = req.body as { ids: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ msg: 'ids array required', success: false });
+      }
+      try {
+        await dbConnect();
+        await IssueObjectModel.deleteMany({ _id: { $in: ids } });
+        return res.status(200).json({ msg: 'Issues deleted', success: true });
+      } catch (error) {
+        return res.status(500).json({ msg: 'Failed to delete issues', success: false, error });
+      }
+    }
     default:
       console.log('running 400');
       return res.status(400).json({ msg: 'Route not found', success: false });

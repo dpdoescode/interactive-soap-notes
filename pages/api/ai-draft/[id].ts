@@ -17,8 +17,18 @@ export interface AIDraftIssue {
   plan: string[];
 }
 
+export interface GapSuggestion {
+  type: 'existing' | 'new';
+  gapTitle: string;
+  gapDescription: string;
+  issueTitle: string;
+  assessmentEntry: string;
+  evidenceSummary: string;
+}
+
 export interface AIDraftOutput {
   issues: AIDraftIssue[];
+  gapSuggestions: GapSuggestion[];
 }
 
 type AIDraftResponse = {
@@ -143,8 +153,18 @@ A directory of DTR (lab) members will be provided in the user message. Use it to
 2. Assessment: write in direct coach voice — what you think is going on beyond practical issues (underlying causes). Make interpretations that are specific to the context and avoid generalizations and write them in a way where a) students can understand and b) coaches/peer can co-regulate with the student/team on assessments. It should capture interpretations about what is driving the behaviors and practices you are seeing, how the students are doing with respect to the regulation gaps, and what is getting in their way of making progress on their project and learning. 
 3. supporting_quotes: pull 2–4 exact or near-exact quotes from the transcript that back up all the context and assessments. These are stored but not shown by default — they will be revealed only when the coach asks.
 4. Plan: Be as detailed as the meeting warrants. Use tags. No extrapolation beyond what was discussed. Can include specific action items as shown in the examples.  Plans must target situational issues and regulation gaps in a challenging and constructive, yet supportive/celebrative way by facilitating the use of cognitive, metacognitive, and emotional strategies, tools and resources utilized in DTR (peers, sprint logs, research canvases, representations for thinking, etc.). The plan should be directly connected to the context and assessment — it should follow logically from them and address the issues identified.
-5. If tracked practice gaps are provided, connect relevant assessment entries to them explicitly. If patterns emerge across past CAP notes of a current practice gap, connect that practice gap to the current issue of concern and assessments. This helps the coach see how the current issue is playing out across meetings and over time, and can help them identify leverage points for coaching around that practice gap. If patterns emerge across CAP notes of an unidentified practice gap, suggest a new practice gap and connect it to the current issue of concern and assessments.
+5. If tracked practice gaps are provided, mention relevant ones explicitly in your assessment entries when the transcript shows that gap recurring. Only reference gaps from the provided list — do not invent new ones.
 6. Everything must trace to the transcript. Nothing invented.
+
+## Gap Analysis
+
+After writing the issues, scan the full history of prior CAP notes provided and output gap suggestions in "gap_suggestions". Be conservative — only flag something if you are confident.
+
+For existing tracked gaps: if a prior notes pattern clearly recurs in this week's transcript, output a suggestion with type "existing". Copy the gap title verbatim from the provided list.
+
+For new gaps: if you see a pattern recurring across 3 or more prior notes that does not match any tracked gap, output a suggestion with type "new" and propose a short title and description. Do not suggest a new gap if fewer than 3 prior notes show the pattern, or if the current week's transcript does not also show it.
+
+If you find nothing worth flagging, return an empty array for "gap_suggestions". Never force a suggestion.
 
 ## JSON Output
 
@@ -167,8 +187,29 @@ Return a JSON object only — no markdown wrapping. Structure:
         "[tag] Plan item — can be a full reflection prompt or action item"
       ]
     }
+  ],
+  "gap_suggestions": [
+    {
+      "type": "existing or new",
+      "gap_title": "Exact title of existing gap, or proposed title for new gap",
+      "gap_description": "Only for type new — description of the pattern",
+      "issue_title": "Title of the current issue this connects to",
+      "assessment_entry": "The assessment sentence to add if the coach confirms this",
+      "evidence_summary": "Brief note on which prior meetings show the pattern"
+    }
   ]
 }`;
+
+// Returns the start of the academic quarter containing the given date.
+// Quarter boundaries: Fall Sep 15, Winter Dec 15, Spring Mar 15, Summer Jun 15.
+const getQuarterStart = (date: Date): Date => {
+  const month = date.getMonth(); // 0-indexed
+  const year = date.getFullYear();
+  if (month >= 8) return new Date(year, 8, 15);   // Sep 15 — Fall
+  if (month >= 5) return new Date(year, 5, 15);   // Jun 15 — Summer
+  if (month >= 2) return new Date(year, 2, 15);   // Mar 15 — Spring
+  return new Date(year - 1, 11, 15);              // Dec 15 prior year — Winter
+};
 
 const fetchAllPeople = async (): Promise<{ name: string; slack_id: string }[]> => {
   if (!process.env.STUDIO_API) return [];
@@ -450,8 +491,7 @@ export default async function handler(
     const {
       followUpMessage = '',
       previousDraft = '',
-      allPeople: bodyPeople = [],
-      autoTriggered = false
+      allPeople: bodyPeople = []
     } = req.body;
 
     const noteWeek = getMondayOfWeek(new Date(capNote.date));
@@ -466,46 +506,21 @@ export default async function handler(
       ? teamReflection.coachReflections
       : '';
 
-    if (!reflections.trim()) {
-      return res.status(400).json({
-        success: false,
-        error: 'REFLECTIONS_REQUIRED'
-      });
-    }
-
-    if (autoTriggered) {
-      const SETTLE_MS = 5 * 60 * 1000;
-      const lastSaved = teamReflection?.lastReflectionSavedAt;
-      if (!lastSaved || Date.now() - new Date(lastSaved).getTime() < SETTLE_MS) {
-        return res.status(400).json({ success: false, error: 'REFLECTIONS_SETTLING' });
-      }
-    }
-
     const allPeople: { name: string; slack_id: string }[] =
       Array.isArray(bodyPeople) && bodyPeople.length > 0
         ? bodyPeople
         : await fetchAllPeople();
 
-    // Fetch same-project notes first, then backfill from other projects so the
-    // model always sees at least 2 real coach-written examples for style calibration
-    let priorNotes: any[] = await CAPNoteModel.find({
+    // Fetch all prior notes for this project this quarter for pattern detection.
+    // Style examples are already hardcoded in the system prompt — no backfill needed.
+    const quarterStart = getQuarterStart(new Date(capNote.date));
+    const priorNotes: any[] = await CAPNoteModel.find({
       project: capNote.project,
-      _id: { $ne: capNote._id }
+      _id: { $ne: capNote._id },
+      date: { $gte: quarterStart }
     })
       .sort({ date: -1 })
-      .limit(3)
       .populate({ path: 'currentIssues', model: IssueObjectModel });
-
-    if (priorNotes.length < 2) {
-      const backfill: any[] = await CAPNoteModel.find({
-        project: { $ne: capNote.project },
-        currentIssues: { $exists: true, $not: { $size: 0 } }
-      })
-        .sort({ date: -1 })
-        .limit(2 - priorNotes.length)
-        .populate({ path: 'currentIssues', model: IssueObjectModel });
-      priorNotes = [...priorNotes, ...backfill];
-    }
 
     const [activeGaps, peerCases] = await Promise.all([
       PracticeGapObjectModel.find({
@@ -565,6 +580,18 @@ export default async function handler(
                 : [],
               plan: Array.isArray(issue.plan) ? issue.plan : []
             }))
+          : [],
+        gapSuggestions: Array.isArray(raw.gap_suggestions)
+          ? raw.gap_suggestions
+              .filter((s: any) => s.type === 'existing' || s.type === 'new')
+              .map((s: any) => ({
+                type: s.type,
+                gapTitle: s.gap_title ?? '',
+                gapDescription: s.gap_description ?? '',
+                issueTitle: s.issue_title ?? '',
+                assessmentEntry: s.assessment_entry ?? '',
+                evidenceSummary: s.evidence_summary ?? ''
+              }))
           : []
       };
     } catch {
@@ -577,6 +604,7 @@ export default async function handler(
       version: existingCount + 1,
       generatedAt: new Date().toISOString(),
       issues: parsed.issues,
+      gapSuggestions: parsed.gapSuggestions,
       followUpMessage: followUpMessage?.trim() || null
     });
     capNote.aiDrafts = capNote.aiDrafts ?? [];

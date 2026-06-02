@@ -33,7 +33,8 @@ const readRawBody = async (req: NextApiRequest): Promise<Buffer> => {
   return Buffer.concat(chunks);
 };
 
-const formatUtterances = (utterances: any[] = []) => {
+const formatUtterances = (utterances: any[] | null = []) => {
+  if (!utterances) return [];
   return utterances.map((utterance) => ({
     speaker: utterance.speaker ? `Speaker ${utterance.speaker}` : 'Speaker',
     text: utterance.text ?? '',
@@ -43,8 +44,8 @@ const formatUtterances = (utterances: any[] = []) => {
   }));
 };
 
-const formatTranscriptText = (utterances: any[] = [], fallbackText = '') => {
-  if (!utterances.length) {
+const formatTranscriptText = (utterances: any[] | null = [], fallbackText = '') => {
+  if (!utterances || !utterances.length) {
     return fallbackText;
   }
 
