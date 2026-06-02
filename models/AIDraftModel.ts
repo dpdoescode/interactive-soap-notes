@@ -24,6 +24,9 @@ export interface AIDraftDocStruct {
   issues: AIDraftIssueStruct[];
   gapSuggestions: GapSuggestionStruct[];
   followUpMessage: string | null;
+  slackMessageTs: string | null;
+  slackChannel: string | null;
+  finalized: boolean;
 }
 
 const AIDraftIssueSchema = new mongoose.Schema<AIDraftIssueStruct>(
@@ -61,7 +64,10 @@ const AIDraftSchema = new mongoose.Schema<AIDraftDocStruct>(
     generatedAt: { type: String, required: true },
     issues: { type: [AIDraftIssueSchema], default: [] },
     gapSuggestions: { type: [GapSuggestionSchema], default: [] },
-    followUpMessage: { type: String, default: null }
+    followUpMessage: { type: String, default: null },
+    slackMessageTs: { type: String, default: null },
+    slackChannel: { type: String, default: null },
+    finalized: { type: Boolean, default: false }
   },
   { timestamps: false }
 );

@@ -456,6 +456,35 @@ export default async function handler(
     }
   }
 
+  if (req.method === 'PATCH') {
+    // Mark the latest draft as finalized and update the Slack message to Closed
+    try {
+      const latest = await AIDraftModel.findOne({ capNoteId: id }).sort({ version: -1 });
+      if (!latest) return res.status(404).json({ success: false, error: 'No draft found' });
+
+      await AIDraftModel.findByIdAndUpdate(latest._id, { finalized: true });
+
+      if (process.env.STUDIO_API && latest.slackMessageTs && latest.slackChannel) {
+        const capNote = await CAPNoteModel.findById(id);
+        fetch(`${process.env.STUDIO_API}/slack/updateDraftStatus`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ts: latest.slackMessageTs,
+            channel: latest.slackChannel,
+            project: capNote?.project ?? '',
+            sigDate: capNote?.date ?? null,
+            issueTitles: latest.issues.map((i: any) => i.title)
+          })
+        }).catch((err) => console.error('Failed to update Slack draft status:', err));
+      }
+
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
@@ -611,19 +640,32 @@ export default async function handler(
     capNote.aiDrafts.push(newDraft._id);
     await capNote.save();
 
-    // Notify SIG head via Slack DM (fire-and-forget — don't block the response)
+    // Notify SIG head via Slack DM and save the message ts/channel for later status updates
     if (process.env.STUDIO_API) {
-      fetch(`${process.env.STUDIO_API}/slack/notifyDraftReady`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          capNoteId: id,
-          project: capNote.project,
-          sigAbbreviation: capNote.sigAbbreviation,
-          sigDate: capNote.date,
-          issueTitles: parsed.issues.map((i) => i.title)
-        })
-      }).catch((err) => console.error('Failed to notify Slack of draft ready:', err));
+      try {
+        const slackRes = await fetch(`${process.env.STUDIO_API}/slack/notifyDraftReady`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            capNoteId: id,
+            project: capNote.project,
+            sigAbbreviation: capNote.sigAbbreviation,
+            sigDate: capNote.date,
+            issueTitles: parsed.issues.map((i) => i.title)
+          })
+        });
+        if (slackRes.ok) {
+          const slackData = await slackRes.json();
+          if (slackData.ts && slackData.channel) {
+            await AIDraftModel.findByIdAndUpdate(newDraft._id, {
+              slackMessageTs: slackData.ts,
+              slackChannel: slackData.channel
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Failed to notify Slack of draft ready:', err);
+      }
     }
 
     return res.status(200).json({
