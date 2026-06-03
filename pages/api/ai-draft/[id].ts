@@ -640,8 +640,8 @@ export default async function handler(
     capNote.aiDrafts.push(newDraft._id);
     await capNote.save();
 
-    // Notify SIG head via Slack DM and save the message ts/channel for later status updates
-    if (process.env.STUDIO_API) {
+    // Only notify on the first draft
+    if (existingCount === 0 && process.env.STUDIO_API) {
       try {
         const slackRes = await fetch(`${process.env.STUDIO_API}/slack/notifyDraftReady`, {
           method: 'POST',
