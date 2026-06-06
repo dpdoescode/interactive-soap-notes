@@ -223,7 +223,7 @@ export default function CAPNote({
           );
           if (hasCompletedTranscript && !autoGenTriggered.current) {
             autoGenTriggered.current = true;
-            generateDraft();
+            // generateDraft(); // temporarily disabled — re-enable when not reviewing old notes
           }
         }
       })
@@ -304,7 +304,7 @@ export default function CAPNote({
       !autoGenTriggered.current
     ) {
       autoGenTriggered.current = true;
-      generateDraft();
+      // generateDraft(); // temporarily disabled — re-enable when not reviewing old notes
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingTranscripts, aiDraftVersions.length, isGeneratingDraft]);
